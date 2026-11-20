@@ -31,8 +31,21 @@
 	Delete that file to reset the "summoned once" / "compass used" flags.
 ]]
 
--- services ---------------------------------------------------------------
+if not game:IsLoaded() then
+	task.wait()
+	repeat
+		task.wait()
+	until game:IsLoaded()
+end
+
+-- wait until the local player exists, then continue
 local Players = game:GetService("Players")
+local Player = Players.LocalPlayer
+if not Player then
+	Player = Players.PlayerAdded:Wait()
+end
+
+-- services ---------------------------------------------------------------
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local GroupService = game:GetService("GroupService")
@@ -43,18 +56,6 @@ local VirtualUser = game:GetService("VirtualUser")
 local CollectionService = game:GetService("CollectionService")
 local CoreGui = game:GetService("CoreGui")
 
-if not game:IsLoaded() then
-	task.wait()
-	repeat
-		task.wait()
-	until game:IsLoaded()
-end
-
--- wait until the local player exists, then continue
-local Player = Players.LocalPlayer
-if not Player then
-	Player = Players.PlayerAdded:Wait()
-end
 local PlayerGui = Player:WaitForChild("PlayerGui")
 local Env = (getgenv and getgenv()) or _G
 
