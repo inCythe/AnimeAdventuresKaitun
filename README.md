@@ -54,10 +54,11 @@ Set `AutoSell = false` to disable.
 
 ## Challenges-only mode
 
-Set `ChallengesOnlyAfterCompass = true` to stop the endgame grind once the
+Set `ChallengesOnlyAfterCompass = true` to stop the infinite grind once the
 celestial compass unit is owned (`CompassDone` or the unit is in the profile):
 
-- story loop, act 6, and infinite tower are never joined again
+- infinite tower is never joined again (story still runs until `TargetLevel`,
+  and act 6 is still attempted once)
 - the script stays in the lobby and only takes Daily/Normal challenge joins,
   including ones that reset on the :00/:30 clock
 - hunt and the one-time lobby claims (codes, dailies, summons, team equip)

@@ -22,7 +22,8 @@
 		     level <  50 -> Story act 1  (vote lose at wave 6, replay)
 		     level >= 50 -> Story act 6 via the story skipper (full clear, then leave) -> Infinite (wave 6 lose loop)
 		     (ChallengesOnlyAfterCompass = true: once the compass unit is owned,
-		      skip story/infinite entirely and only join challenges/dailies)
+		      skip infinite only — story still runs to TargetLevel, then the
+		      lobby just takes challenges/dailies)
 
 	MATCH PIPELINE
 		Auto place / upgrade / vote start / skip waves, vote lose at wave 6 (loop
@@ -2575,12 +2576,6 @@ local function Plan()
 		return JoinChallenge(Def, Uuid)
 	end
 
-	-- goal reached: idle in the lobby and only take challenge/daily joins
-	if Config.ChallengesOnlyAfterCompass
-		and (State.CompassDone or HasUnit(Config.CompassPick)) then
-		return false
-	end
-
 	if Level < Config.EndgameLevel then
 		return JoinStoryLoop()
 	end
@@ -2588,6 +2583,13 @@ local function Plan()
 	-- one attempt at act 6; if it is cleared or fails, move on to infinite
 	if JoinAct6() == true then
 		return true
+	end
+
+	-- challenges-only: once the compass unit is owned, never join infinite —
+	-- story still runs until EndgameLevel so low-level accounts keep progressing
+	if Config.ChallengesOnlyAfterCompass
+		and (State.CompassDone or HasUnit(Config.CompassPick)) then
+		return false
 	end
 	return JoinInfiniteLoop()
 end
