@@ -216,8 +216,8 @@ local Config = {
 -- set this BEFORE running the script/loader, e.g.:
 --   getgenv().Kaitun = {
 --       TargetLevel = 40, CompassUnit = "Elyssia",
---       Team = { "Bulby", "Windsong" },
---       StoryTo = "All", StoryHard = false,
+--       Team = { "Bulby", "Windsong", "Speedwagon", "C.E.O.", "Hammergirl" },
+--       StoryHard = false,
 --       RollAtGems = 20000, SaveGems = 0,
 --       FpsBoost = true,
 --       Webhook = "https://discord.com/api/webhooks/...",
@@ -266,14 +266,6 @@ if type(UserConfig) == "table" then
 			Config.WebhookMode = "all"
 		else
 			Config.WebhookMode = "goal"
-		end
-	end
-	if UserConfig.StoryTo ~= nil then
-		local To = UserConfig.StoryTo
-		if To == "All" or To == "all" then
-			Config.SkipAct = nil
-		else
-			Config.SkipAct = tonumber(To)
 		end
 	end
 	if UserConfig.AutoSell ~= nil then

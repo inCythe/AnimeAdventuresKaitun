@@ -19,9 +19,8 @@ getgenv().Kaitun = {
 	TargetLevel = 40,          -- level to switch to endgame/infinite (default 50)
 	CompassUnit = "Elyssia",   -- celestial compass pick AND hunt target
 	Team = {                   -- units to equip, in order; unowned ones are skipped
-		"Bulby", "Windsong",
+		"Bulby", "Windsong", "Speedwagon", "C.E.O.", "Hammergirl",
 	},
-	StoryTo = "All",           -- "All" or an act number (story skipper target)
 	StoryHard = false,         -- true = play story/endgame acts on Hard
 	RollAtGems = 20000,        -- go hunt when gems >= this
 	SaveGems = 0,              -- never hunt below this many gems
