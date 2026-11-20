@@ -346,8 +346,10 @@ local function CountEntries(Table)
 	return Count
 end
 
+local CallWithTimeout -- defined below
+
 local function Invoke(Name, ...)
-	local Ok, Result = pcall(InvokeServer, Name, ...)
+	local Ok, Result = CallWithTimeout(10, InvokeServer, Name, ...)
 	if not Ok then
 		Log("%s failed: %s", Name, tostring(Result))
 		return nil, false
@@ -356,7 +358,7 @@ local function Invoke(Name, ...)
 end
 
 -- run a call on its own thread; some remotes never return on bad arguments
-local function CallWithTimeout(Timeout, Fn, ...)
+CallWithTimeout = function(Timeout, Fn, ...)
 	local Args = table.pack(...)
 	local Done, Ok, Result = false, nil, nil
 	task.spawn(function()
@@ -382,7 +384,10 @@ end
 local function FireEndpoint(Name, ...)
 	local Remote = GetEndpoint(Name)
 	if Remote and Remote:IsA("RemoteFunction") then
-		return Remote:InvokeServer(...)
+		local Args = table.pack(...)
+		return CallWithTimeout(10, function()
+			return Remote:InvokeServer(table.unpack(Args, 1, Args.n))
+		end)
 	end
 	return nil
 end
@@ -600,6 +605,9 @@ local function CinematicStub(...)
 	end
 end
 
+-- the cinematic modules are lazy-loaded, so a one-time scan at boot misses
+-- them; rescan on every summon and remember what is already hooked
+local CinematicHooked = {}
 local function InstallCinematicSkip()
 	if not (HookFunction and GetGc and IsLClosure) then
 		return
@@ -609,10 +617,12 @@ local function InstallCinematicSkip()
 		return
 	end
 	for _, Value in ipairs(Gc) do
-		if type(Value) == "function" and IsLClosure(Value) then
+		if type(Value) == "function" and IsLClosure(Value) and not CinematicHooked[Value] then
 			local Info = debug.getinfo(Value)
 			if Info and Info.name and CinematicFunctions[Info.name] then
-				pcall(HookFunction, Value, CinematicStub)
+				if pcall(HookFunction, Value, CinematicStub) then
+					CinematicHooked[Value] = true
+				end
 			end
 		end
 	end
@@ -1357,7 +1367,7 @@ local function RedeemCodes()
 			if MinLevel and not Config.ForceCodes and Level < MinLevel then
 				Locked = Locked + 1
 			else
-				local Ok, Reply = pcall(InvokeServer, "redeem_code", Code)
+				local Ok, Reply = CallWithTimeout(10, InvokeServer, "redeem_code", Code)
 				if not Ok then
 					Log("code %s: request failed (%s)", Code, tostring(Reply))
 				elseif Reply == nil or Reply == "" or Reply == true then
@@ -1535,7 +1545,7 @@ local function ClaimDailyReward()
 	if Elapsed < DailyWait and not DailyPopupOpen() then
 		return false
 	end
-	pcall(InvokeServer, "claim_daily_reward")
+	CallWithTimeout(10, InvokeServer, "claim_daily_reward")
 	local After = WaitForChange(function()
 		return tonumber(Profile().last_daily_reward_claimed_time) or 0
 	end, Before, 3)
@@ -1549,7 +1559,7 @@ end
 
 -- daily mission board
 local function BoardMissionIds()
-	local Ok, List = pcall(InvokeServer, "request_current_dailymissions")
+	local Ok, List = CallWithTimeout(10, InvokeServer, "request_current_dailymissions")
 	if Ok and type(List) == "table" then
 		local Ids = {}
 		for _, Value in pairs(List) do
@@ -1561,7 +1571,7 @@ local function BoardMissionIds()
 			return Ids
 		end
 	end
-	local OkDefs, Defs = pcall(InvokeServer, "request_dailymissions_data")
+	local OkDefs, Defs = CallWithTimeout(10, InvokeServer, "request_dailymissions_data")
 	if OkDefs and type(Defs) == "table" then
 		local Ids = {}
 		for MissionId, Data in pairs(Defs) do
@@ -1623,7 +1633,7 @@ local function ClaimDailyMissions()
 			if Need ~= nil and Have < Need then
 				InProgress = InProgress + 1
 			else
-				pcall(InvokeServer, "request_claim_dailymission", MissionId)
+				CallWithTimeout(10, InvokeServer, "request_claim_dailymission", MissionId)
 				local Gone = WaitForChange(function()
 					return not StillTracked(MissionId)
 				end, false, 2)
@@ -1637,7 +1647,7 @@ local function ClaimDailyMissions()
 		elseif Ledger[MissionId] == true then
 			AlreadyDone = AlreadyDone + 1
 		elseif Config.AcceptMissions then
-			pcall(InvokeServer, "request_claim_dailymission", MissionId)
+			CallWithTimeout(10, InvokeServer, "request_claim_dailymission", MissionId)
 			Started = Started + 1
 			task.wait(0.15)
 		end
@@ -1733,7 +1743,7 @@ local function ClaimQuests()
 					Ready = Have >= Need
 				end
 				if Ready and type(Target) == "string" then
-					pcall(InvokeServer, "redeem_quest", Target)
+					CallWithTimeout(10, InvokeServer, "redeem_quest", Target)
 					Attempts = Attempts + 1
 					task.wait(0.15)
 				end
@@ -1788,7 +1798,7 @@ local function ClaimBattlepass()
 			if #Claimable > 0 then
 				local Before = CountEntries(ClaimedTiers)
 				for _, Tier in ipairs(Claimable) do
-					pcall(InvokeServer, "claim_battlepass_rewards", Track, Tier)
+					CallWithTimeout(10, InvokeServer, "claim_battlepass_rewards", Track, Tier)
 					task.wait(0.2)
 				end
 				local After = WaitForChange(function()
@@ -1831,11 +1841,17 @@ end
 -- summon -----------------------------------------------------------------
 -- one 10x roll; returns Charged, Results
 local function RollTen(BannerId)
+	if Config.SkipCutscenes then
+		InstallCinematicSkip()
+	end
 	local Before = HatchCounters()
 	local GemsBefore = GetGems()
-	local Ok = pcall(InvokeServer, "buy_from_banner", BannerId, "gems10")
-	if not Ok then
-		return false, {}
+	-- a timeout does not mean the roll failed: the gems/hatch checks below are
+	-- the source of truth, so keep going even when the invoke never returns
+	CallWithTimeout(10, InvokeServer, "buy_from_banner", BannerId, "gems10")
+	-- the cinematic module may only load once the roll is in flight
+	if Config.SkipCutscenes then
+		InstallCinematicSkip()
 	end
 
 	-- the invoke returns once the server handled it, so check right away and
@@ -2096,7 +2112,7 @@ AutoSell = function()
 		for J = Index, math.min(Index + 49, #ToSell) do
 			Batch[#Batch + 1] = ToSell[J]
 		end
-		pcall(InvokeServer, "sell_units", Batch)
+		CallWithTimeout(10, InvokeServer, "sell_units", Batch)
 		task.wait(0.4)
 	end
 end
@@ -2115,7 +2131,7 @@ local function EquipTeam()
 		-- drop everything that should not be equipped
 		for _, Uuid in pairs(Collection().equipped_units or {}) do
 			if not Want[tostring(Uuid)] then
-				pcall(InvokeServer, "unequip_unit", tostring(Uuid))
+				CallWithTimeout(10, InvokeServer, "unequip_unit", tostring(Uuid))
 				task.wait(0.5)
 			end
 		end
@@ -2125,13 +2141,13 @@ local function EquipTeam()
 				AllGood = false
 				local Occupant = SlotUuid(Slot)
 				if Occupant then
-					pcall(InvokeServer, "unequip_unit", Occupant)
+					CallWithTimeout(10, InvokeServer, "unequip_unit", Occupant)
 					task.wait(0.5)
 				end
 				if Pass == 3 then
-					pcall(InvokeServer, "equip_unit", Uuid)
+					CallWithTimeout(10, InvokeServer, "equip_unit", Uuid)
 				else
-					pcall(InvokeServer, "equip_unit", Uuid, Slot)
+					CallWithTimeout(10, InvokeServer, "equip_unit", Uuid, Slot)
 				end
 				task.wait(0.5)
 			end
@@ -2394,7 +2410,7 @@ local function PickChallenge(Level)
 	for _, Mode in ipairs(ChallengeOrder) do
 		local Def = ChallengeDefs[Mode]
 		if Level >= Def.MinLevel() then
-			local Ok, Data = pcall(InvokeServer, Def.GetFn)
+			local Ok, Data = CallWithTimeout(10, InvokeServer, Def.GetFn)
 			if Ok and type(Data) == "table" then
 				Reachable = true
 				local Uuid = Data.current_uuid and tostring(Data.current_uuid)
@@ -2433,7 +2449,7 @@ local function JoinChallenge(Def, Uuid)
 		return true
 	end
 	if MatchmakingGui() then
-		pcall(InvokeServer, "leave_matchmaking")
+		CallWithTimeout(10, InvokeServer, "leave_matchmaking")
 		task.wait(0.5)
 	end
 	LeaveOwnedLobby()
@@ -2446,7 +2462,7 @@ local function JoinChallenge(Def, Uuid)
 
 	for Attempt = 1, Config.MatchmakingRetries do
 		Log("requesting %s (%d/%d)", Def.Label, Attempt, Config.MatchmakingRetries)
-		pcall(InvokeServer, "request_matchmaking", Def.LevelId)
+		CallWithTimeout(10, InvokeServer, "request_matchmaking", Def.LevelId)
 		local Deadline = os.clock() + 4
 		repeat
 			if MatchmakingMap() == Def.MapLabel then
@@ -2597,7 +2613,7 @@ local function RunLobby()
 			task.wait(1)
 		end
 		if MatchmakingGui() then
-			pcall(InvokeServer, "leave_matchmaking")
+			CallWithTimeout(10, InvokeServer, "leave_matchmaking")
 			task.wait(Config.MatchmakingRetryWait)
 		end
 	end
@@ -3377,7 +3393,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 	end
 
 	local Before = #PlayerUnitModels()
-	local Ok, Result = pcall(InvokeServer, "spawn_unit", Uuid, Cf)
+	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
 	if not (Ok and Result) then
 		-- a node only becomes permanently bad after failing twice
 		Node.Fails = (Node.Fails or 0) + 1
@@ -3467,7 +3483,7 @@ local function RunUpgrades()
 						return
 					end
 					if Now - (Placer.UpgradeFail[Model] or 0) >= Config.UpgradeRetry then
-						local Ok, Result = pcall(InvokeServer, "upgrade_unit_ingame", Model)
+						local Ok, Result = CallWithTimeout(10, InvokeServer, "upgrade_unit_ingame", Model)
 						if Ok and Result then
 							Placer.UpgradeFail[Model] = nil
 							task.wait(Config.ActionDelay)
@@ -3550,13 +3566,13 @@ local function AutoVotes()
 	if StartGui and StartGui:IsA("ScreenGui") and StartGui.Enabled and Voting
 		and Now - VoteClock.Start > Config.VoteRetry then
 		VoteClock.Start = Now
-		pcall(InvokeServer, "vote_start")
+		CallWithTimeout(10, InvokeServer, "vote_start")
 	end
 
 	local SkipGui = PlayerGui:FindFirstChild("VoteSkip")
 	if SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled and Now - VoteClock.Skip > Config.VoteRetry then
 		VoteClock.Skip = Now
-		pcall(InvokeServer, "vote_wave_skip")
+		CallWithTimeout(10, InvokeServer, "vote_wave_skip")
 	end
 
 	local Settings = Player:FindFirstChild("_settings")
