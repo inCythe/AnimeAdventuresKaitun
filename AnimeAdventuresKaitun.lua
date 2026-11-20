@@ -289,6 +289,7 @@ local State = {
 	ChallengeSlot = 0,            -- last half-hour slot the challenges were handled in
 	ChallengeDone = {},
 	Hunted = {},                 -- unit id -> true, hunt targets already acquired
+	RedeemedCodes = {},          -- code -> true, backup ledger in case the profile lags
 	Current = nil,
 }
 
@@ -304,8 +305,10 @@ local function LoadState()
 			State[Key] = Value
 		end
 	end
-	if type(State.Hunted) ~= "table" then
-		State.Hunted = {}
+	for _, Key in ipairs({ "Hunted", "RedeemedCodes" }) do
+		if type(State[Key]) ~= "table" then
+			State[Key] = {}
+		end
 	end
 end
 
@@ -1298,13 +1301,24 @@ local CodeDead = {}   -- codes the server ignored this session (never saved to d
 
 local function RedeemedSet()
 	local Set = {}
+	local function Add(Code)
+		if Code ~= nil then
+			Set[tostring(Code):upper()] = true
+		end
+	end
+	-- redeemed_codes may be a map { CODE = true } or a list { "CODE", ... }
 	local Redeemed = Profile().redeemed_codes
 	if type(Redeemed) == "table" then
 		for Code, Value in pairs(Redeemed) do
-			if Value then
-				Set[tostring(Code):upper()] = true
+			if type(Value) == "string" then
+				Add(Value)
+			elseif Value then
+				Add(Code)
 			end
 		end
+	end
+	for Code in pairs(State.RedeemedCodes or {}) do
+		Add(Code)
 	end
 	return Set
 end
@@ -1344,6 +1358,8 @@ local function RedeemCodes()
 				elseif Reply == nil or Reply == "" or Reply == true then
 					if WaitForRedeemed(Code, 3) then
 						Redeemed[Code] = true
+						State.RedeemedCodes[Code] = true
+						SaveState()
 						Now = Now + 1
 						Log("code %s: redeemed", Code)
 					else
@@ -1368,11 +1384,47 @@ end
 -- celestial compass ------------------------------------------------------
 local CompassTried = false
 
+-- server-side check: the profile/session may record compass usage even when
+-- the local state file was deleted or the pick unit was never obtained
+local function CompassUsedOnServer()
+	local function Scan(Table)
+		if type(Table) ~= "table" then
+			return false
+		end
+		for Key, Value in pairs(Table) do
+			-- only usage markers (compass_used / compass_pick / ...), never the
+			-- item entry itself which would false-positive before it is used
+			if type(Key) == "string"
+				and Key:lower():find("compass", 1, true)
+				and (Key:lower():find("used", 1, true)
+					or Key:lower():find("pick", 1, true)
+					or Key:lower():find("claim", 1, true)
+					or Key:lower():find("done", 1, true))
+			then
+				if Value == true then
+					return true
+				end
+				if type(Value) == "string" and #Value > 0 then
+					return true
+				end
+				if type(Value) == "table" and next(Value) ~= nil then
+					return true
+				end
+			end
+		end
+		return false
+	end
+	if Scan(Profile()) then
+		return true
+	end
+	return Scan(EndpointsClient.session)
+end
+
 local function UseCompass()
 	if State.CompassDone then
 		return
 	end
-	if HasUnit(Config.CompassPick) then
+	if CompassUsedOnServer() or HasUnit(Config.CompassPick) then
 		State.CompassDone = true
 		SaveState()
 		return
@@ -1600,16 +1652,21 @@ local function ClaimLevelRewards()
 	local Pending = {}
 
 	local Milestones = {}
-	for _, Def in pairs(PlayerLevelRewards) do
+	for Key, Def in pairs(PlayerLevelRewards) do
 		local Milestone = type(Def) == "table" and tonumber(Def.level)
 		if Milestone then
-			Milestones[#Milestones + 1] = Milestone
+			Milestones[#Milestones + 1] = { Level = Milestone, Key = Key }
 		end
 	end
-	table.sort(Milestones)
+	table.sort(Milestones, function(A, B)
+		return A.Level < B.Level
+	end)
 
-	for _, Milestone in ipairs(Milestones) do
+	for _, Entry in ipairs(Milestones) do
+		local Milestone = Entry.Level
+		-- level_rewards_claimed may be keyed by level or by the def index
 		local Done = Claimed[Milestone] ~= nil or Claimed[tostring(Milestone)] ~= nil
+			or Claimed[Entry.Key] ~= nil or Claimed[tostring(Entry.Key)] ~= nil
 		if Milestone <= Level and not Done then
 			Pending[#Pending + 1] = Milestone
 		end
@@ -3339,6 +3396,13 @@ local function Main()
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
 	end
+	-- mark the compass done if the server says the pick changed
+	pcall(function()
+		EndpointsClient.connect_endpoint("celestial_compass_pick_changed", function()
+			State.CompassDone = true
+			SaveState()
+		end)
+	end)
 	if Config.FpsBoost then
 		task.spawn(function()
 			if Env.AAKaitunFpsRestore then
