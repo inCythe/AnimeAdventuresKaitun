@@ -202,7 +202,7 @@ local Config = {
 	-- placement
 	Percent = 5,
 	NodeSpacing = 2.5,
-	RadiusGround = 20,
+	RadiusGround = 40,
 	RadiusHill = 40,
 	RadiusFarm = 10,
 	FarmTerrain = "ground",
