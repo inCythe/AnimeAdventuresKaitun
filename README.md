@@ -30,6 +30,7 @@ getgenv().Kaitun = {
 	WebhookPing = "",          -- e.g. "<@123456789>" pinged on each webhook
 	AutoSell = true,           -- sell units not on the team (see below)
 }
+loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```
 
 Unit names are matched case/punctuation-insensitively against both ids and
