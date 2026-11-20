@@ -203,7 +203,76 @@ local Config = {
 	UpgradeRetry = 2,
 	VoteRetry = 2,
 	DefaultSpawnCap = 5,
+
+	-- getgenv().Kaitun overrides (merged below)
+	WantedUnits = nil,           -- Kaitun.Wanted = { "elyssia", ... } — hunt list, in order
+	SupportUnits = nil,          -- Kaitun.Supports = { ... } — priority team units
+	StoryDifficulty = "Normal",  -- "Normal" | "Hard" (Kaitun.StoryHard)
+	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
+	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
 }
+
+-- user config via getgenv().Kaitun -----------------------------------------
+-- set this BEFORE running the script/loader, e.g.:
+--   getgenv().Kaitun = {
+--       TargetLevel = 40, WantedCompass = "Elyssia",
+--       Wanted = { "Bulby", "C.E.O." }, Supports = { "Windsong" },
+--       StoryTo = "All", StoryHard = false,
+--       RollAtGems = 20000, SaveGems = 0,
+--       Webhook = "https://discord.com/api/webhooks/...",
+--       WebhookType = "Goal Only", WebhookPing = "",
+--   }
+local UserConfig = Env.Kaitun
+if type(UserConfig) == "table" then
+	local function Num(Value)
+		return tonumber(Value)
+	end
+	if Num(UserConfig.TargetLevel) then
+		Config.EndgameLevel = math.floor(Num(UserConfig.TargetLevel))
+	end
+	if UserConfig.WantedCompass ~= nil then
+		Config.CompassPick = tostring(UserConfig.WantedCompass):lower()
+	end
+	if type(UserConfig.Wanted) == "table" then
+		Config.WantedUnits = UserConfig.Wanted
+	end
+	if type(UserConfig.Supports) == "table" then
+		Config.SupportUnits = UserConfig.Supports
+	end
+	if Num(UserConfig.RollAtGems) then
+		Config.HuntGems = Num(UserConfig.RollAtGems)
+	end
+	if Num(UserConfig.SaveGems) then
+		Config.MinGems = Num(UserConfig.SaveGems)
+	end
+	if UserConfig.StoryHard ~= nil then
+		Config.StoryDifficulty = UserConfig.StoryHard and "Hard" or "Normal"
+	end
+	if UserConfig.Webhook ~= nil then
+		Config.WebhookUrl = tostring(UserConfig.Webhook)
+	end
+	if UserConfig.WebhookPing ~= nil then
+		Config.WebhookPing = tostring(UserConfig.WebhookPing)
+	end
+	if UserConfig.WebhookType ~= nil then
+		local Kind = tostring(UserConfig.WebhookType):lower()
+		if Kind:find("none") or Kind:find("off") or Kind:find("disable") then
+			Config.WebhookMode = "none"
+		elseif Kind:find("all") then
+			Config.WebhookMode = "all"
+		else
+			Config.WebhookMode = "goal"
+		end
+	end
+	if UserConfig.StoryTo ~= nil then
+		local To = UserConfig.StoryTo
+		if To == "All" or To == "all" then
+			Config.SkipAct = nil
+		else
+			Config.SkipAct = tonumber(To)
+		end
+	end
+end
 
 -- state (persisted) ------------------------------------------------------
 local StateFile = "AAKaitun_" .. tostring(Player.UserId) .. ".json"
@@ -216,6 +285,7 @@ local State = {
 	Reported = {},                -- webhook milestones already sent
 	ChallengeSlot = 0,            -- last half-hour slot the challenges were handled in
 	ChallengeDone = {},
+	Hunted = {},                 -- unit id -> true, hunt targets already acquired
 	Current = nil,
 }
 
@@ -230,6 +300,9 @@ local function LoadState()
 		for Key, Value in pairs(Data) do
 			State[Key] = Value
 		end
+	end
+	if type(State.Hunted) ~= "table" then
+		State.Hunted = {}
 	end
 end
 
@@ -430,6 +503,65 @@ end
 
 local function HasUnit(UnitId)
 	return BestCopies()[UnitId] ~= nil or HatchedTotal(UnitId) > 0
+end
+
+-- user-supplied unit ids (Kaitun.Wanted / Kaitun.Supports) are matched
+-- case-insensitively against the Units data, ignoring punctuation
+local UnitIdLookup = nil
+local function NormalizeUnitId(Id)
+	local Raw = tostring(Id or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if Raw == "" then
+		return nil
+	end
+	if Units[Raw] then
+		return Raw
+	end
+	local Lower = Raw:lower()
+	if Units[Lower] then
+		return Lower
+	end
+	if not UnitIdLookup then
+		UnitIdLookup = {}
+		for Key in pairs(Units) do
+			local K = tostring(Key)
+			UnitIdLookup[K:lower()] = K
+			UnitIdLookup[(K:lower():gsub("[^%w]", ""))] = K
+		end
+	end
+	return UnitIdLookup[Lower] or UnitIdLookup[Lower:gsub("[^%w]", "")] or Lower
+end
+
+-- ordered hunt list: Kaitun.Wanted if set, otherwise the single HuntUnit
+local function HuntTargets()
+	local List = {}
+	if type(Config.WantedUnits) == "table" and #Config.WantedUnits > 0 then
+		for _, Id in ipairs(Config.WantedUnits) do
+			local Norm = NormalizeUnitId(Id)
+			if Norm then
+				List[#List + 1] = Norm
+			end
+		end
+	else
+		List[1] = Config.HuntUnit
+	end
+	local Seen, Out = {}, {}
+	for _, Id in ipairs(List) do
+		if not Seen[Id] then
+			Seen[Id] = true
+			Out[#Out + 1] = Id
+		end
+	end
+	return Out
+end
+
+local function HuntRemaining()
+	local Remaining = {}
+	for _, Id in ipairs(HuntTargets()) do
+		if not HasUnit(Id) and not State.Hunted[Id] then
+			Remaining[#Remaining + 1] = Id
+		end
+	end
+	return Remaining
 end
 
 local function HatchCounters()
@@ -822,10 +954,10 @@ end
 local RequestFn = (syn and syn.request) or http_request or request or (http and http.request)
 
 local function SendWebhook(Title, Description, Color)
-	if Config.WebhookUrl == "" or not RequestFn then
+	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
 	end
-	local Body = HttpService:JSONEncode({
+	local Body = {
 		username = Config.WebhookName,
 		embeds = { {
 			title = Title,
@@ -838,7 +970,11 @@ local function SendWebhook(Title, Description, Color)
 			},
 			timestamp = DateTime.now():ToIsoDate(),
 		} },
-	})
+	}
+	if Config.WebhookPing ~= "" then
+		Body.content = Config.WebhookPing
+	end
+	Body = HttpService:JSONEncode(Body)
 	task.spawn(function()
 		pcall(RequestFn, {
 			Url = Config.WebhookUrl,
@@ -878,7 +1014,7 @@ local Milestones = {
 	{
 		Key = "Gems" .. Config.HuntGems,
 		Title = Config.HuntGems .. " gems reached",
-		Text = "Heading to the lobby to hunt " .. Config.HuntUnit .. ".",
+		Text = "Heading to the lobby to hunt.",
 		Check = function()
 			return GetGems() >= Config.HuntGems
 		end,
@@ -900,12 +1036,12 @@ local Milestones = {
 		end,
 	},
 	{
-		Key = "HuntUnit",
-		Title = "Got " .. Config.HuntUnit,
-		Text = Config.HuntUnit .. " is in the collection; the special team is now used.",
+		Key = "HuntDone",
+		Title = "Hunt complete",
+		Text = "All wanted units are in the collection; the special team is now used.",
 		Color = 5763719,
 		Check = function()
-			return HasUnit(Config.HuntUnit)
+			return State.HuntDone == true
 		end,
 	},
 }
@@ -1691,7 +1827,7 @@ local function NeedHunt()
 	if State.HuntDone then
 		return false
 	end
-	if HasUnit(Config.HuntUnit) then
+	if #HuntRemaining() == 0 then
 		State.HuntDone = true
 		SaveState()
 		return false
@@ -1700,17 +1836,27 @@ local function NeedHunt()
 end
 
 local function HuntUnit()
+	local Target = HuntRemaining()[1]
+	if not Target then
+		return false
+	end
 	local Banner = Banners[Config.HuntBanner]
 	local Cost = (type(Banner) == "table" and tonumber(Banner.gem_cost) or 50) * 10
-	local BaseHatched = HatchedTotal(Config.HuntUnit)
+	local BaseHatched = HatchedTotal(Target)
 	local Rolls = 0
-	Log("hunting %s on %s", Config.HuntUnit, Config.HuntBanner)
+	Log("hunting %s on %s", Target, Config.HuntBanner)
 
 	while Alive() do
-		if HasUnit(Config.HuntUnit) or HatchedTotal(Config.HuntUnit) > BaseHatched then
-			State.HuntDone = true
+		if HasUnit(Target) or HatchedTotal(Target) > BaseHatched then
+			State.Hunted[Target] = true
+			if #HuntRemaining() == 0 then
+				State.HuntDone = true
+			end
 			SaveState()
-			Log("got %s after %d x10 rolls", Config.HuntUnit, Rolls)
+			Log("got %s after %d x10 rolls", Target, Rolls)
+			if Config.WebhookMode == "all" then
+				SendWebhook("Hunted " .. Target, "Got " .. Target .. " after " .. Rolls .. " x10 rolls.", 5763719)
+			end
 			return true
 		end
 		if GetGems() - Cost < Config.MinGems then
@@ -1750,7 +1896,9 @@ local function BuildTeam()
 	end
 
 	if State.HuntDone then
-		Add(Config.HuntUnit)
+		for _, Id in ipairs(HuntTargets()) do
+			Add(Id)
+		end
 
 		local Bleed = 0
 		for _, Id in ipairs(Config.BleedUnits) do
@@ -1783,6 +1931,14 @@ local function BuildTeam()
 		end
 		for _, Id in ipairs(Config.FarmUnits) do
 			Add(Id)
+		end
+	end
+
+	-- user priority units (Kaitun.Supports)
+	for _, Id in ipairs(Config.SupportUnits or {}) do
+		local Norm = NormalizeUnitId(Id)
+		if Norm then
+			Add(Norm)
 		end
 	end
 
@@ -2179,7 +2335,7 @@ local function JoinStoryLoop()
 	end
 	State.Current = { Kind = "Story1", LevelId = Stage }
 	SaveState()
-	return JoinSolo(Stage, "Normal")
+	return JoinSolo(Stage, Config.StoryDifficulty)
 end
 
 -- story skipper target: world + act (nil act = last act of the world)
@@ -2212,7 +2368,7 @@ local function JoinAct6()
 
 	State.Current = { Kind = "Act6", LevelId = Target }
 	SaveState()
-	local Ok = JoinSolo(Target, "Normal", SkipWorld)
+	local Ok = JoinSolo(Target, Config.StoryDifficulty, SkipWorld)
 	if Ok then
 		return true
 	end
@@ -2225,7 +2381,7 @@ local function JoinAct6()
 				Log("no skip -> playing first uncleared act %s", Id)
 				State.Current = { Kind = "Act6", LevelId = Id }
 				SaveState()
-				return JoinSolo(Id, "Normal")
+				return JoinSolo(Id, Config.StoryDifficulty)
 			end
 			break
 		end
@@ -2937,7 +3093,7 @@ local function DecideAfterMatch(Ctx)
 		return "Leave"
 	end
 	if NeedHunt() then
-		Log("gems >= %d -> leaving to hunt %s", Config.HuntGems, Config.HuntUnit)
+		Log("gems >= %d -> leaving to hunt", Config.HuntGems)
 		return "Leave"
 	end
 
@@ -2960,6 +3116,9 @@ local function FinishMatch(Ctx)
 
 	local Decision = DecideAfterMatch(Ctx)
 	Log("match finished -> %s", Decision)
+	if Config.WebhookMode == "all" then
+		SendWebhook("Match finished (" .. tostring(Ctx.Kind) .. ")", "Decision: " .. Decision .. ".", 5793266)
+	end
 
 	local function Transitioned()
 		return not GameFinished() or MatchActive()
