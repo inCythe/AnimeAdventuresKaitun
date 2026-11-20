@@ -29,6 +29,7 @@ getgenv().Kaitun = {
 	WebhookType = "Goal Only", -- "Goal Only" milestones | "All" + match events | "None"
 	WebhookPing = "",          -- e.g. "<@123456789>" pinged on each webhook
 	AutoSell = true,           -- sell units not on the team (see below)
+	SkipCutscenes = true,      -- skip summon/reward/hatch cinematics (default true)
 }
 loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```

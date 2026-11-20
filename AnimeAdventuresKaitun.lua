@@ -207,6 +207,7 @@ local Config = {
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
 	AutoSell = true,             -- sell everything that is not on the team
+	SkipCutscenes = true,        -- stub summon/reward/hatch cinematics
 	StoryDifficulty = "Normal",  -- "Normal" | "Hard" (Kaitun.StoryHard)
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
@@ -222,7 +223,7 @@ local Config = {
 --       FpsBoost = true,
 --       Webhook = "https://discord.com/api/webhooks/...",
 --       WebhookType = "Goal Only", WebhookPing = "",
---       AutoSell = true,
+--       AutoSell = true, SkipCutscenes = true,
 --   }
 local UserConfig = Env.Kaitun
 if type(UserConfig) == "table" then
@@ -270,6 +271,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.AutoSell ~= nil then
 		Config.AutoSell = UserConfig.AutoSell and true or false
+	end
+	if UserConfig.SkipCutscenes ~= nil then
+		Config.SkipCutscenes = UserConfig.SkipCutscenes and true or false
 	end
 end
 
@@ -3332,7 +3336,9 @@ local function Main()
 		return
 	end
 	AntiAfk()
-	InstallCinematicSkip()
+	if Config.SkipCutscenes then
+		InstallCinematicSkip()
+	end
 	if Config.FpsBoost then
 		task.spawn(function()
 			if Env.AAKaitunFpsRestore then
