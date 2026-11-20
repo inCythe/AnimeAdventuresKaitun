@@ -214,7 +214,6 @@ local Config = {
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
 	AutoSell = true,             -- sell everything that is not on the team
 	SkipCutscenes = true,        -- stub summon/reward/hatch cinematics
-	StoryDifficulty = "Normal",  -- "Normal" | "Hard" (Kaitun.StoryHard)
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
 }
@@ -224,7 +223,6 @@ local Config = {
 --   getgenv().Kaitun = {
 --       TargetLevel = 50, CompassUnit = "Elyssia",
 --       Team = { "Bulby", "Windsong", "C.E.O.", "Hammergirl" },
---       StoryHard = false,
 --       RollAtGems = 20000, SaveGems = 0,
 --       FpsBoost = true,
 --       Webhook = "https://discord.com/api/webhooks/...",
@@ -253,9 +251,6 @@ if type(UserConfig) == "table" then
 	end
 	if Num(UserConfig.SaveGems) then
 		Config.MinGems = Num(UserConfig.SaveGems)
-	end
-	if UserConfig.StoryHard ~= nil then
-		Config.StoryDifficulty = UserConfig.StoryHard and "Hard" or "Normal"
 	end
 	if UserConfig.FpsBoost ~= nil then
 		Config.FpsBoost = UserConfig.FpsBoost and true or false
@@ -2477,7 +2472,7 @@ local function JoinStoryLoop()
 	end
 	State.Current = { Kind = "Story1", LevelId = Stage }
 	SaveState()
-	return JoinSolo(Stage, Config.StoryDifficulty)
+	return JoinSolo(Stage, "Normal")
 end
 
 -- story skipper target: world + act (nil act = last act of the world)
@@ -2510,7 +2505,7 @@ local function JoinAct6()
 
 	State.Current = { Kind = "Act6", LevelId = Target }
 	SaveState()
-	local Ok = JoinSolo(Target, Config.StoryDifficulty, SkipWorld)
+	local Ok = JoinSolo(Target, "Normal", SkipWorld)
 	if Ok then
 		return true
 	end
@@ -2523,7 +2518,7 @@ local function JoinAct6()
 				Log("no skip -> playing first uncleared act %s", Id)
 				State.Current = { Kind = "Act6", LevelId = Id }
 				SaveState()
-				return JoinSolo(Id, Config.StoryDifficulty)
+				return JoinSolo(Id, "Normal")
 			end
 			break
 		end

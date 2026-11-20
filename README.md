@@ -21,7 +21,6 @@ getgenv().Kaitun = {
 	Team = {                   -- units to equip, in order; unowned ones are skipped
 		"Bulby", "Windsong", "C.E.O.", "Hammergirl",
 	},
-	StoryHard = false,         -- true = play story/endgame acts on Hard
 	RollAtGems = 20000,        -- go hunt when gems >= this
 	SaveGems = 0,              -- never hunt below this many gems
 	FpsBoost = true,           -- FPS boost on execute (default true)
