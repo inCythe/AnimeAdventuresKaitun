@@ -210,7 +210,7 @@ local Config = {
 	RetryEvery = 10,
 	UpgradeRetry = 2,
 	VoteRetry = 2,
-	DefaultSpawnCap = 5,
+	ShowVisuals = true,          -- draw scan nodes/rings/arrow like auto_place.lua
 
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
@@ -2870,6 +2870,202 @@ local function ScanCircle(Center, FaceTarget, RoadParts)
 	return Nodes
 end
 
+-- visuals (ported from auto_place.lua / scan_placement.lua) ---------------
+local VisualKindColors = {
+	ground = Color3.fromRGB(0, 255, 80),
+	hill = Color3.fromRGB(255, 170, 0),
+}
+local VisualBlockedColor = Color3.fromRGB(255, 60, 60)
+local VisualRingColor = Color3.fromRGB(255, 255, 255)
+local VisualFarmRingColor = Color3.fromRGB(190, 80, 255)
+local VisualFarmNodeColor = Color3.fromRGB(230, 90, 0)
+local VisualRingSegments = 64
+local VisualRootName = "AA_Kaitun"
+
+local function ClearScanVisuals()
+	local Old = workspace:FindFirstChild(VisualRootName)
+	if Old then
+		Old:Destroy()
+	end
+end
+
+local function MakeVisualPart(Props)
+	local Part = Instance.new("Part")
+	Part.Anchored = true
+	Part.CanCollide = false
+	Part.CanQuery = false
+	Part.CanTouch = false
+	Part.CastShadow = false
+	Part.Material = Enum.Material.Neon
+	for Key, Value in pairs(Props) do
+		Part[Key] = Value
+	end
+	return Part
+end
+
+local function AddVisualHighlight(Folder, Color, FillTrans, OutlineTrans)
+	local Highlight = Instance.new("Highlight")
+	Highlight.FillColor = Color
+	Highlight.OutlineColor = Color
+	Highlight.FillTransparency = FillTrans or 0.45
+	Highlight.OutlineTransparency = OutlineTrans or 0.2
+	Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	Highlight.Parent = Folder
+end
+
+local function VisualizeScan(Lanes)
+	if not Config.ShowVisuals then
+		return
+	end
+	ClearScanVisuals()
+	local Root = Instance.new("Folder")
+	Root.Name = VisualRootName
+
+	local ValidGround = Instance.new("Folder")
+	ValidGround.Name = "ValidGround"
+	local ValidHill = Instance.new("Folder")
+	ValidHill.Name = "ValidHill"
+	local ValidFarm = Instance.new("Folder")
+	ValidFarm.Name = "ValidFarm"
+	local BlockedFolder = Instance.new("Folder")
+	BlockedFolder.Name = "Blocked"
+	local RingFolder = Instance.new("Folder")
+	RingFolder.Name = "Ring"
+	for _, Folder in ipairs({ ValidGround, ValidHill, ValidFarm, BlockedFolder, RingFolder }) do
+		Folder.Parent = Root
+	end
+	AddVisualHighlight(ValidGround, VisualKindColors.ground)
+	AddVisualHighlight(ValidHill, VisualKindColors.hill)
+	AddVisualHighlight(ValidFarm, VisualFarmNodeColor)
+	AddVisualHighlight(BlockedFolder, VisualBlockedColor)
+	AddVisualHighlight(RingFolder, VisualRingColor, 0.15, 0)
+
+	for _, Lane in ipairs(Lanes) do
+		local Center = Lane.Center
+		local RingY = Center.Y + 1.2
+
+		local Rings = {
+			{ Radius = Config.RadiusGround, Color = VisualRingColor },
+		}
+		if Config.RadiusHill ~= Config.RadiusGround then
+			Rings[#Rings + 1] = { Radius = Config.RadiusHill, Color = VisualKindColors.hill }
+		end
+		local FarmRingDrawn = false
+		for _, Ring in ipairs(Rings) do
+			if math.abs(Ring.Radius - Config.RadiusFarm) < 0.01 then
+				FarmRingDrawn = true
+			end
+		end
+		if not FarmRingDrawn and Config.RadiusFarm > Config.RadiusGround then
+			Rings[#Rings + 1] = { Radius = Config.RadiusFarm, Color = VisualFarmRingColor }
+		end
+		for _, Ring in ipairs(Rings) do
+			for I = 0, VisualRingSegments - 1 do
+				local Angle = (I / VisualRingSegments) * math.pi * 2
+				local SegLen = (2 * math.pi * Ring.Radius / VisualRingSegments) * 1.15
+				local Segment = MakeVisualPart({
+					Size = Vector3.new(0.15, 0.15, SegLen),
+					CFrame = CFrame.new(
+						Center.X + math.cos(Angle) * Ring.Radius,
+						RingY,
+						Center.Z + math.sin(Angle) * Ring.Radius
+					) * CFrame.Angles(0, -Angle, 0),
+					Color = Ring.Color,
+					Transparency = 0.1,
+				})
+				Segment.Parent = RingFolder
+			end
+		end
+
+		for _, Node in ipairs(Lane.Nodes) do
+			local Folder
+			local Color
+			local Transparency
+			if Node.Valid then
+				if Node.FarmZone then
+					Folder = ValidFarm
+					Color = VisualFarmNodeColor
+				else
+					Folder = Node.Kind == "hill" and ValidHill or ValidGround
+					Color = VisualKindColors[Node.Kind] or VisualKindColors.ground
+				end
+				Transparency = 0.55
+			else
+				Folder = BlockedFolder
+				Color = VisualBlockedColor
+				Transparency = 0.7
+			end
+			local Dot = MakeVisualPart({
+				Shape = Enum.PartType.Cylinder,
+				Size = Vector3.new(0.15, 0.55, 0.55),
+				CFrame = CFrame.new(Node.Position + Vector3.new(0, 0.45, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+				Color = Color,
+				Transparency = Transparency,
+			})
+			Dot.Parent = Folder
+		end
+
+		-- center marker: floating billboard arrow, same images as _UnitPointer
+		local ArrowColor = Color3.fromRGB(80, 220, 255)
+		local Anchor = Instance.new("Part")
+		Anchor.Name = "AA_ScanArrow"
+		Anchor.Anchored = true
+		Anchor.CanCollide = false
+		Anchor.CanQuery = false
+		Anchor.CanTouch = false
+		Anchor.CastShadow = false
+		Anchor.Transparency = 1
+		Anchor.Size = Vector3.new(1, 1, 1)
+		Anchor.CFrame = CFrame.new(Center.X, Center.Y + 9, Center.Z)
+		Anchor.Parent = Root
+		local Billboard = Instance.new("BillboardGui")
+		Billboard.Size = UDim2.fromOffset(100, 100)
+		Billboard.AlwaysOnTop = true
+		Billboard.LightInfluence = 0
+		Billboard.MaxDistance = math.huge
+		Billboard.Parent = Anchor
+		local Glow = Instance.new("ImageLabel")
+		Glow.BackgroundTransparency = 1
+		Glow.Image = "rbxassetid://81351645241261"
+		Glow.ImageTransparency = 0.55
+		Glow.ImageColor3 = ArrowColor
+		Glow.AnchorPoint = Vector2.new(0.5, 0.5)
+		Glow.Position = UDim2.fromScale(0.5, 0.5)
+		Glow.Size = UDim2.fromScale(1, 1)
+		Glow.Parent = Billboard
+		local Arrow = Instance.new("ImageLabel")
+		Arrow.BackgroundTransparency = 1
+		Arrow.Image = "rbxassetid://81256616982657"
+		Arrow.ImageTransparency = 0.35
+		Arrow.ImageColor3 = ArrowColor
+		Arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+		Arrow.Position = UDim2.fromScale(0.5, 0.5)
+		Arrow.Size = UDim2.fromScale(0.31, 0.31)
+		Arrow.Rotation = 180
+		Arrow.Parent = Billboard
+
+		local GlowStuds = 5
+		local Camera = workspace.CurrentCamera
+		local BaseY = Center.Y + 1.5
+		local T0 = os.clock()
+		local Connection
+		Connection = game:GetService("RunService").Heartbeat:Connect(function()
+			if not Anchor.Parent then
+				Connection:Disconnect()
+				return
+			end
+			local Bob = math.sin((os.clock() - T0) * 3) * 0.5
+			Anchor.CFrame = CFrame.new(Center.X, BaseY + Bob, Center.Z)
+			local Distance = (Camera.CFrame.Position - Anchor.Position).Magnitude
+			local PxPerStud = Camera.ViewportSize.Y / (2 * math.tan(math.rad(Camera.FieldOfView) / 2) * math.max(Distance, 1))
+			Billboard.Size = UDim2.fromOffset(GlowStuds * PxPerStud, GlowStuds * PxPerStud)
+		end)
+	end
+
+	Root.Parent = workspace
+	return Root
+end
+
 local function Rescan()
 	local RoadParts = {}
 	local Road = workspace:FindFirstChild("_road")
@@ -2889,6 +3085,7 @@ local function Rescan()
 	end
 
 	local All = {}
+	local Lanes = {}
 	for _, Path in ipairs(Paths) do
 		local Distance = Path.Total * math.clamp(Config.Percent, 0, 100) / 100
 		local Center = PointAtDistance(Path.Points, Distance)
@@ -2896,6 +3093,7 @@ local function Rescan()
 		local Nodes = ScanCircle(Center, EnemyDir, RoadParts)
 		ValidateNodes(Nodes)
 		MarkLedges(Nodes)
+		local LaneNodes = {}
 		for _, Node in ipairs(Nodes) do
 			local Best = math.huge
 			for _, Point in ipairs(PathPoints) do
@@ -2908,13 +3106,17 @@ local function Rescan()
 			Node.PathDist = math.sqrt(Best)
 			Node.BaseValid = Node.Valid
 			All[#All + 1] = Node
+			LaneNodes[#LaneNodes + 1] = Node
 		end
+		Lanes[#Lanes + 1] = { Center = Center, Nodes = LaneNodes }
 	end
 	Placer.Nodes = All
+	Placer.Lanes = Lanes
 	Placer.Used = {}
 	Placer.LastAttempt = {}
 	Placer.UpgradeFail = {}
 	Log("placement scan: %d nodes", #All)
+	VisualizeScan(Lanes)
 end
 
 -- unit classification
@@ -2957,9 +3159,9 @@ end
 local function SpawnCap(UnitId)
 	local Def = Units[UnitId]
 	if type(Def) ~= "table" then
-		return Config.DefaultSpawnCap
+		return 5
 	end
-	return tonumber(Def.spawn_cap) or tonumber(Def.max_spawn_units) or Config.DefaultSpawnCap
+	return tonumber(Def.spawn_cap) or tonumber(Def.max_spawn_units) or 5
 end
 
 local function UnitCost(UnitId)
@@ -3325,6 +3527,7 @@ end
 
 local function RunInGame()
 	Log("match mode (%s)", CurrentContext().Kind)
+	ClearScanVisuals()
 
 	Placer.Core = Loader.load_core_service(nil, "PlacementCore")
 	Placer.Paths = Loader.load_core_service(nil, "PathService")
