@@ -212,7 +212,7 @@ local Config = {
 	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
 	UpgradeRetry = 2,
 	VoteRetry = 2,
-	ShowVisuals = true,          -- draw scan nodes/rings/arrow like auto_place.lua
+	ShowVisuals = false,          -- draw scan nodes/rings/arrow like auto_place.lua
 
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
