@@ -30,6 +30,9 @@ getgenv().Kaitun = {
 	WebhookPing = "",          -- e.g. "<@123456789>" pinged on each webhook
 	AutoSell = true,           -- sell units not on the team (see below)
 	SkipCutscenes = true,      -- skip summon/reward/hatch cinematics (default true)
+	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned,
+	                                 -- stop joining story/infinite; lobby only
+	                                 -- takes challenges/dailies
 }
 loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```
@@ -48,6 +51,17 @@ After the team is equipped (post-summon / post-hunt, lobby only):
 - every other unit (all copies) is sold via `sell_units`
 
 Set `AutoSell = false` to disable.
+
+## Challenges-only mode
+
+Set `ChallengesOnlyAfterCompass = true` to stop the endgame grind once the
+celestial compass unit is owned (`CompassDone` or the unit is in the profile):
+
+- story loop, act 6, and infinite tower are never joined again
+- the script stays in the lobby and only takes Daily/Normal challenge joins,
+  including ones that reset on the :00/:30 clock
+- hunt and the one-time lobby claims (codes, dailies, summons, team equip)
+  still run normally before the compass unit is obtained
 
 ## Files
 

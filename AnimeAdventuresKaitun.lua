@@ -21,6 +21,8 @@
 		     Normal challenge (level 15+, not cleared)
 		     level <  50 -> Story act 1  (vote lose at wave 6, replay)
 		     level >= 50 -> Story act 6 via the story skipper (full clear, then leave) -> Infinite (wave 6 lose loop)
+		     (ChallengesOnlyAfterCompass = true: once the compass unit is owned,
+		      skip story/infinite entirely and only join challenges/dailies)
 
 	MATCH PIPELINE
 		Auto place / upgrade / vote start / skip waves, vote lose at wave 6 (loop
@@ -134,6 +136,7 @@ local Config = {
 	-- compass
 	CompassId = "celestial_compass_u21",
 	CompassPick = "elyssia",
+	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
 
 	-- group + favorite
 	GroupId = 10611639,
@@ -234,6 +237,7 @@ local Config = {
 --       Webhook = "https://discord.com/api/webhooks/...",
 --       WebhookType = "Goal Only", WebhookPing = "",
 --       AutoSell = true, SkipCutscenes = true,
+--       ChallengesOnlyAfterCompass = true,
 --   }
 local UserConfig = Env.Kaitun
 if type(UserConfig) == "table" then
@@ -284,6 +288,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.SkipCutscenes ~= nil then
 		Config.SkipCutscenes = UserConfig.SkipCutscenes and true or false
+	end
+	if UserConfig.ChallengesOnlyAfterCompass ~= nil then
+		Config.ChallengesOnlyAfterCompass = UserConfig.ChallengesOnlyAfterCompass and true or false
 	end
 end
 
@@ -2594,6 +2601,12 @@ local function Plan()
 	if Def then
 		Log("%s available (%s)", Def.Label, tostring(Uuid))
 		return JoinChallenge(Def, Uuid)
+	end
+
+	-- goal reached: idle in the lobby and only take challenge/daily joins
+	if Config.ChallengesOnlyAfterCompass
+		and (State.CompassDone or HasUnit(Config.CompassPick)) then
+		return false
 	end
 
 	if Level < Config.EndgameLevel then
