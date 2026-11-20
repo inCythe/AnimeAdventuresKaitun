@@ -208,7 +208,7 @@ local Config = {
 	FarmTerrain = "ground",
 	ActionDelay = 0.2,
 	RetryEvery = 3,               -- seconds before a unit retries after a failed placement
-	UnitSpacing = 3,              -- nodes this close to a placed unit are blocked
+	SummonHatchWait = 2,          -- max seconds to wait for the hatch record after a 10x
 	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
 	UpgradeRetry = 2,
 	VoteRetry = 2,
@@ -1842,19 +1842,22 @@ local function RollTen(BannerId)
 	if not Ok then
 		return false, {}
 	end
-	local Charged = false
-	local ChargeDeadline = os.clock() + 3
-	repeat
-		task.wait(0.1)
-		Charged = GetGems() < GemsBefore
-	until Charged or os.clock() >= ChargeDeadline
 
-	local Results, Waited = {}, 0
-	repeat
-		task.wait(0.25)
-		Waited = Waited + 0.25
+	-- the invoke returns once the server handled it, so check right away and
+	-- only then poll (fast) instead of sleeping fixed steps
+	local Charged = GetGems() < GemsBefore
+	local ChargeDeadline = os.clock() + 3
+	while not Charged and os.clock() < ChargeDeadline do
+		task.wait(0.03)
+		Charged = GetGems() < GemsBefore
+	end
+
+	local Results = DiffHatches(Before, HatchCounters())
+	local HatchDeadline = os.clock() + Config.SummonHatchWait
+	while #Results == 0 and os.clock() < HatchDeadline do
+		task.wait(0.03)
 		Results = DiffHatches(Before, HatchCounters())
-	until #Results > 0 or Waited >= 10
+	end
 	return Charged, Results
 end
 
@@ -1926,9 +1929,8 @@ local function HuntUnit()
 		if Charged then
 			Rolls = Rolls + 1
 		elseif #Results == 0 then
-			task.wait(1)
+			task.wait(0.5)
 		end
-		task.wait(0.5)
 	end
 	return false
 end
@@ -2653,6 +2655,16 @@ local Placer = {
 	Grid = nil,
 }
 
+-- a node that has a unit on it (ours or anyone's) or that failed twice is
+-- retired for good: never picked again and its visual dot is removed
+function Placer.Retire(Node)
+	Placer.Used[Node] = true
+	if Node.Dot then
+		Node.Dot:Destroy()
+		Node.Dot = nil
+	end
+end
+
 local ProbeSize = Vector3.new(0.05, 2.7, 0.05)
 local RayHeight = 80
 local LedgeDrop = 1.5
@@ -3013,6 +3025,7 @@ local function VisualizeScan(Lanes)
 				Transparency = Transparency,
 			})
 			Dot.Parent = Folder
+			Node.Dot = Dot
 		end
 
 		-- center marker: floating billboard arrow, same images as _UnitPointer
@@ -3329,19 +3342,52 @@ local function NodesFor(UnitId)
 	return Pool, Farm, (not Farm) and Terrain == "hill"
 end
 
--- block every node within UnitSpacing of a placed unit
-local function MarkNearUsed(Position)
-	local Limit = Config.UnitSpacing * Config.UnitSpacing
+-- nearest scanned node to a world position (used or not), no spacing radius:
+-- a unit only ever occupies the single node it stands on
+function Placer.NearestNode(Position)
+	local Limit = Config.NodeSpacing * Config.NodeSpacing
+	local Best, BestD
 	for _, Node in ipairs(Placer.Nodes) do
 		local Dx, Dz = Node.Position.X - Position.X, Node.Position.Z - Position.Z
-		if Dx * Dx + Dz * Dz <= Limit then
-			Placer.Used[Node] = true
+		local D = Dx * Dx + Dz * Dz
+		if D <= Limit and (not BestD or D < BestD) then
+			Best, BestD = Node, D
 		end
+	end
+	return Best
+end
+
+-- every unit in the match (ours AND other players') retires the node under it
+function Placer.RefreshOccupied()
+	local Seen = {}
+	local function Check(Model)
+		if Model and not Seen[Model] and Model:IsA("Model") and Model:IsDescendantOf(workspace) then
+			Seen[Model] = true
+			local Ok, Pivot = pcall(function()
+				return Model:GetPivot()
+			end)
+			if Ok then
+				local Node = Placer.NearestNode(Pivot.Position)
+				if Node and not Placer.Used[Node] then
+					Placer.Retire(Node)
+				end
+			end
+		end
+	end
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			Check(Model)
+		end
+	end
+	for _, Model in ipairs(CollectionService:GetTagged("player_units")) do
+		Check(Model)
 	end
 end
 
--- returns Placed, Reason ("nonode" = no free node, not a server failure)
-local function TryPlace(Uuid, UnitId)
+-- returns Placed, Reason ("nonode" = no free node, "occupied" = retry another)
+function Placer.PlaceOnce(Uuid, UnitId)
+	Placer.RefreshOccupied()
 	local Pool, Farm, PreferPath = NodesFor(UnitId)
 	local Node = PickNode(Pool, Farm, PreferPath)
 	if not Node then
@@ -3354,6 +3400,13 @@ local function TryPlace(Uuid, UnitId)
 			Cf = Snapped
 		end
 	end
+	-- the grid snap can land on a node that already has a unit
+	local Landing = Placer.NearestNode(Cf.Position)
+	if Landing and Landing ~= Node and Placer.Used[Landing] then
+		Placer.Retire(Node)
+		return false, "occupied"
+	end
+
 	local Before = #PlayerUnitModels()
 	local Ok, Result = pcall(InvokeServer, "spawn_unit", Uuid, Cf)
 	if not (Ok and Result) then
@@ -3361,6 +3414,7 @@ local function TryPlace(Uuid, UnitId)
 		Node.Fails = (Node.Fails or 0) + 1
 		if Node.Fails >= 2 then
 			Node.Bad = true
+			Placer.Retire(Node)
 		end
 		return false, "server"
 	end
@@ -3369,10 +3423,22 @@ local function TryPlace(Uuid, UnitId)
 	repeat
 		task.wait(0.1)
 	until #PlayerUnitModels() > Before or os.clock() >= Deadline
-	Placer.Used[Node] = true
-	MarkNearUsed(Node.Position)
+	Placer.Retire(Node)
+	if Landing then
+		Placer.Retire(Landing)
+	end
 	Log("placed %s", UnitId)
 	return true
+end
+
+local function TryPlace(Uuid, UnitId)
+	for _ = 1, 8 do
+		local Placed, Reason = Placer.PlaceOnce(Uuid, UnitId)
+		if Reason ~= "occupied" then
+			return Placed, Reason
+		end
+	end
+	return false, "nonode"
 end
 
 -- (re)scan until nodes exist: the path cache can still be empty right when a
@@ -3451,6 +3517,7 @@ local function PlacementTick()
 	if #Placer.Nodes == 0 then
 		return
 	end
+	Placer.RefreshOccupied()
 	local Equipped = EquippedUuids()
 	if #Equipped == 0 and os.clock() - Placer.LastWarn > 15 then
 		Placer.LastWarn = os.clock()
