@@ -2633,6 +2633,10 @@ local function RunLobby()
 end
 
 -- ============================================================ MATCH =====
+-- scope block: frees the match locals before Main() so the chunk stays
+-- under Luau's 200-local limit; RunInGame is exported for Main below
+local RunInGame
+do
 local Placer = {
 	Nodes = {},
 	Used = {},
@@ -3602,7 +3606,7 @@ local function LoseWaveFor(Ctx)
 	return 0
 end
 
-local function RunInGame()
+RunInGame = function()
 	Log("match mode (%s)", CurrentContext().Kind)
 	ClearScanVisuals()
 
@@ -3685,6 +3689,7 @@ local function RunInGame()
 		task.wait(0.5)
 	end
 end
+end -- end match scope block
 
 -- entry ------------------------------------------------------------------
 local function Main()
