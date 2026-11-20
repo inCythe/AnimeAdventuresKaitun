@@ -16,7 +16,7 @@
 		5. Summon 10x ONCE (saved to disk, never again)
 		6. Equip team
 		7. Planner picks the next thing to join:
-		     gems >= 20k and no Elyssia  -> summon until Elyssia, then special team
+		     gems >= 20k and no Elyssia  -> summon until Elyssia, then the configured team
 		     Daily challenge  (level 25+, not cleared)
 		     Normal challenge (level 15+, not cleared)
 		     level <  50 -> Story act 1  (vote lose at wave 6, replay)
@@ -164,13 +164,6 @@ local Config = {
 	-- challenges reset on a fixed clock: every :00 and :30
 	ChallengeResetSeconds = 1800,
 	ChallengeResetGrace = 20,     -- wait this long after the reset before leaving for it
-
-	-- special team (used after the Elyssia hunt is done)
-	BleedUnits = { "nobara" },
-	BuffUnits = { "wendy", "leafa", "erwin" },
-	FarmUnits = { "speedwagon", "bulma" },   -- speedwagon first
-	MaxBleed = 1,
-	MaxBuff = 2,
 
 	-- challenges
 	TrustProfileForClear = false, -- true = also treat a challenge uuid found in the profile as cleared
@@ -1050,7 +1043,7 @@ local Milestones = {
 	{
 		Key = "HuntDone",
 		Title = "Hunt complete",
-		Text = "All wanted units are in the collection; the special team is now used.",
+		Text = "All wanted units are in the collection; the configured team is now used.",
 		Color = 5763719,
 		Check = function()
 			return State.HuntDone == true
@@ -1981,43 +1974,6 @@ local function BuildTeam()
 		for _, Id in ipairs(TeamIds) do
 			Add(Id)
 		end
-	elseif State.HuntDone then
-		for _, Id in ipairs(HuntTargets()) do
-			Add(Id)
-		end
-
-		local Bleed = 0
-		for _, Id in ipairs(Config.BleedUnits) do
-			if Bleed < Config.MaxBleed and Add(Id) then
-				Bleed = Bleed + 1
-			end
-		end
-		if Bleed < Config.MaxBleed then
-			local Scanned = {}
-			for UnitId in pairs(Best) do
-				if not Used[UnitId] and DefMentions(Units[UnitId], "bleed") then
-					Scanned[#Scanned + 1] = UnitId
-				end
-			end
-			table.sort(Scanned, function(A, B)
-				return Best[A].Score > Best[B].Score
-			end)
-			for _, Id in ipairs(Scanned) do
-				if Bleed < Config.MaxBleed and Add(Id) then
-					Bleed = Bleed + 1
-				end
-			end
-		end
-
-		local Buff = 0
-		for _, Id in ipairs(Config.BuffUnits) do
-			if Buff < Config.MaxBuff and Add(Id) then
-				Buff = Buff + 1
-			end
-		end
-		for _, Id in ipairs(Config.FarmUnits) do
-			Add(Id)
-		end
 	end
 
 	-- fill the remaining slots with the strongest units
@@ -2047,7 +2003,7 @@ end
 
 -- auto-sell ---------------------------------------------------------------
 -- keeps locked + equipped units, keeps ONE copy (best score, equipped copy
--- preferred) of each team/compass/hunt/special-team unit, sells everything else.
+-- preferred) of each team/compass/hunt unit, sells everything else.
 AutoSell = function()
 	local Owned = Collection().owned_units
 	if type(Owned) ~= "table" then
@@ -2071,13 +2027,6 @@ AutoSell = function()
 	AddKeep(Config.CompassPick)
 	for _, Id in ipairs(Config.TeamUnits or {}) do
 		AddKeep(Id)
-	end
-	-- special-team units keep one copy too, or per-roll selling during the
-	-- hunt would wipe them before BuildTeam switches to the special team
-	for _, List in ipairs({ Config.BleedUnits, Config.BuffUnits, Config.FarmUnits }) do
-		for _, Id in ipairs(List or {}) do
-			AddKeep(Id)
-		end
 	end
 	if not next(KeepIds) then
 		-- no explicit team: keep one copy of every equipped unit id
@@ -2196,7 +2145,7 @@ local function EquipTeam()
 			break
 		end
 	end
-	Log("team equipped (%d units)%s", #Team, State.HuntDone and " [special]" or " [best]")
+	Log("team equipped (%d units)", #Team)
 	if Config.AutoSell then
 		AutoSell()
 	end
