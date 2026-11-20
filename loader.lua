@@ -8,6 +8,18 @@ local UNIVERSE_ID = 3183403065 -- Anime Adventures
 local LOADER_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"
 local SCRIPT_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
 
+if not game:IsLoaded() then
+	repeat
+		task.wait()
+	until game:IsLoaded()
+end
+
+-- wait until the local player exists
+local LocalPlayer = game:GetService("Players").LocalPlayer
+if not LocalPlayer then
+	LocalPlayer = game:GetService("Players").PlayerAdded:Wait()
+end
+
 if game.GameId ~= UNIVERSE_ID then
 	return
 end

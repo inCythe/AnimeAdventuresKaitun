@@ -44,10 +44,17 @@ local CollectionService = game:GetService("CollectionService")
 local CoreGui = game:GetService("CoreGui")
 
 if not game:IsLoaded() then
-	game.Loaded:Wait()
+	task.wait()
+	repeat
+		task.wait()
+	until game:IsLoaded()
 end
 
+-- wait until the local player exists, then continue
 local Player = Players.LocalPlayer
+if not Player then
+	Player = Players.PlayerAdded:Wait()
+end
 local PlayerGui = Player:WaitForChild("PlayerGui")
 local Env = (getgenv and getgenv()) or _G
 
