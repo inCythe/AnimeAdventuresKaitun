@@ -112,6 +112,12 @@ local PlayerLevelRewards = SafeLoad("load_data", "PlayerLevelRewards") or {}
 
 -- config -----------------------------------------------------------------
 local Config = {
+	-- master switch + ui
+	Enabled = true,               -- false = Kaitun idles (the UI toggle flips this live)
+	Ui = true,                    -- false = do not load the UI at all
+	UiAutoHide = true,            -- hide the window a few seconds after it loads
+	UiAutoHideSeconds = 8,
+
 	-- progression
 	StoryAct = 1,                 -- act used for the early loop
 
@@ -212,7 +218,7 @@ local Config = {
 	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
 	UpgradeRetry = 2,
 	VoteRetry = 2,
-	ShowVisuals = false,          -- draw scan nodes/rings/arrow like auto_place.lua
+	ShowVisuals = true,          -- draw scan nodes/rings/arrow like auto_place.lua
 
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
@@ -262,6 +268,12 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.FpsBoost ~= nil then
 		Config.FpsBoost = UserConfig.FpsBoost and true or false
+	end
+	if UserConfig.Ui ~= nil then
+		Config.Ui = UserConfig.Ui and true or false
+	end
+	if UserConfig.Enabled ~= nil then
+		Config.Enabled = UserConfig.Enabled and true or false
 	end
 	if UserConfig.Webhook ~= nil then
 		Config.WebhookUrl = tostring(UserConfig.Webhook)
@@ -2609,14 +2621,27 @@ end
 
 local function RunLobby()
 	Log("lobby mode")
+	local function WaitEnabled()
+		while Alive() and not Config.Enabled do
+			task.wait(0.5)
+		end
+	end
+
+	WaitEnabled()
 	GroupAndFavorite()
+	WaitEnabled()
 	RedeemCodes()
+	WaitEnabled()
 	UseCompass()
+	WaitEnabled()
 	ClaimAll()
+	WaitEnabled()
 	SummonTenOnce()
+	WaitEnabled()
 	EquipTeam()
 
 	while Alive() and Loader.IsLobby do
+		WaitEnabled()
 		local Ok, Err = pcall(Plan)
 		if not Ok then
 			Log("plan error: %s", tostring(Err))
@@ -3699,7 +3724,7 @@ RunInGame = function()
 	-- placement / upgrades on their own thread
 	task.spawn(function()
 		while Alive() do
-			if MatchActive() then
+			if Config.Enabled and MatchActive() then
 				local Ok, Err = pcall(PlacementTick)
 				if not Ok then
 					warn("[AA Kaitun] placement error: " .. tostring(Err))
@@ -3711,9 +3736,14 @@ RunInGame = function()
 
 	while Alive() do
 		local Ctx = CurrentContext()
-		pcall(AutoVotes)
+		if Config.Enabled then
+			pcall(AutoVotes)
+		end
 
-		if MatchActive() then
+		if not Config.Enabled then
+			-- paused from the UI: do nothing until it is switched back on
+			WasActive = false
+		elseif MatchActive() then
 			if not WasActive then
 				WasActive = true
 				LoseVoted = false
@@ -3758,6 +3788,439 @@ RunInGame = function()
 end
 end -- end match scope block
 
+-- ui ----------------------------------------------------------------------
+-- Astral UI. Every Config value is bound to a control; SaveManager keeps the
+-- choices between runs. The window auto-hides after load (RightControl or the
+-- bubble brings it back).
+local function BuildUi()
+	local Base = "https://raw.githubusercontent.com/inCythe/AstralDev/refs/heads/main/"
+	local function Fetch(Path)
+		local Ok, Result = pcall(function()
+			return loadstring(game:HttpGet(Base .. Path))()
+		end)
+		return Ok and Result or nil
+	end
+
+	local Library = Fetch("Astral.lua")
+	if type(Library) ~= "table" then
+		warn("[AA Kaitun] UI library failed to load — running without the UI")
+		return
+	end
+	local SaveManager = Fetch("addons/SaveManager.lua")
+	local ThemeManager = Fetch("addons/ThemeManager.lua")
+
+	-- both must be attached BEFORE CreateWindow (avoids the default-value flash)
+	if SaveManager then
+		SaveManager:SetLibrary(Library)
+		SaveManager:SetFolder("AAKaitun")
+		SaveManager:SetIgnoreIndexes({ "KaitunEnabled" })
+		if ThemeManager then
+			SaveManager:IgnoreThemeSettings()
+		end
+	end
+	if ThemeManager then
+		ThemeManager:SetLibrary(Library)
+	end
+
+	local Window = Library:CreateWindow({
+		Title = "Anime Adventures",
+		Subtitle = "Kaitun",
+		Footer = "RightControl toggles the UI",
+		FooterLeft = "AA Kaitun",
+		Size = UDim2.fromOffset(780, 560),
+		Center = true,
+		Resizable = true,
+		ToggleKeybind = Enum.KeyCode.RightControl,
+		NotifySide = "Right",
+		Bubble = true,
+		SingleInstance = true,
+		AutoShow = true,
+	})
+
+	-- control helpers ------------------------------------------------------
+	local function Notify(Title, Text)
+		pcall(function()
+			Library:Notify({ Title = Title, Description = Text, Time = 3 })
+		end)
+	end
+
+	local function AddToggle(Section, Idx, Text, Table, Key, Tip, After)
+		return Section:AddToggle(Idx, {
+			Text = Text,
+			Default = Table[Key] == true,
+			FireDefault = false,
+			Tooltip = Tip,
+			Callback = function(Value)
+				Table[Key] = Value and true or false
+				if After then
+					After(Value)
+				end
+			end,
+		})
+	end
+
+	local function AddSlider(Section, Idx, Text, Table, Key, Min, Max, Rounding, Suffix, Tip)
+		return Section:AddSlider(Idx, {
+			Text = Text,
+			Default = math.max(Min, math.min(Max, tonumber(Table[Key]) or Min)),
+			Min = Min,
+			Max = Max,
+			Rounding = Rounding or 0,
+			Suffix = Suffix or "",
+			Tooltip = Tip,
+			Callback = function(Value)
+				Table[Key] = Value
+			end,
+		})
+	end
+
+	-- Setter receives the raw text; the box keeps whatever you typed
+	local function AddInput(Section, Idx, Text, Default, Setter, Numeric, Tip)
+		return Section:AddInput(Idx, {
+			Text = Text,
+			Default = Default ~= nil and tostring(Default) or "",
+			Finished = true,
+			Numeric = Numeric == true,
+			AllowEmpty = true,
+			Tooltip = Tip,
+			Callback = function(Value)
+				Setter(tostring(Value or ""))
+			end,
+		})
+	end
+
+	local function AddDropdown(Section, Idx, Text, Values, Current, Setter, Tip)
+		return Section:AddDropdown(Idx, {
+			Text = Text,
+			Values = Values,
+			Default = Current,
+			Multi = false,
+			Tooltip = Tip,
+			Callback = function(Value)
+				if Value ~= nil then
+					Setter(Value)
+				end
+			end,
+		})
+	end
+
+	local function SplitList(Value)
+		local List = {}
+		for Piece in tostring(Value):gmatch("[^,]+") do
+			local Trimmed = Piece:gsub("^%s+", ""):gsub("%s+$", "")
+			if Trimmed ~= "" then
+				List[#List + 1] = Trimmed
+			end
+		end
+		return List
+	end
+
+	local function NumberOr(Value, Old)
+		return tonumber(Value) or Old
+	end
+
+	-- tabs -------------------------------------------------------------------
+	local KaitunTab = Window:AddTab({ Name = "Kaitun", Icon = "power", Description = "Master switch and status" })
+	local ProgressTab = Window:AddTab({ Name = "Progression", Icon = "trending-up", Description = "Levels, story, challenges" })
+	local SummonTab = Window:AddTab({ Name = "Summon & Team", Icon = "sparkles", Description = "Compass, hunt, banners, team" })
+	local MatchTab = Window:AddTab({ Name = "Match", Icon = "swords", Description = "Placement and FPS boost" })
+	local WebhookTab = Window:AddTab({ Name = "Webhook", Icon = "send", Description = "Discord reports" })
+	local SettingsTab = Window:AddTab({ Name = "Settings", Icon = "settings", Description = "UI, themes, configs" })
+
+	-- kaitun -----------------------------------------------------------------
+	local Master = KaitunTab:AddLeftSection("Kaitun", "power")
+	Master:AddToggle("KaitunEnabled", {
+		Text = "Enable Kaitun",
+		Default = Config.Enabled == true,
+		FireDefault = false,
+		Tooltip = "Off = everything idles (placing, voting, joining, claiming). On again to continue.",
+		Callback = function(Value)
+			Config.Enabled = Value and true or false
+			Notify("Kaitun", Value and "Enabled" or "Paused")
+		end,
+	})
+	AddToggle(Master, "KaitunSkipCutscenes", "Skip cutscenes", Config, "SkipCutscenes", "Stubs summon / reward / hatch animations (applies on next execute)")
+	AddToggle(Master, "KaitunAutoSell", "Auto-sell non-team units", Config, "AutoSell", "Sells everything that is not on the team, locked, or equipped")
+
+	local Status = KaitunTab:AddRightSection("Status", "activity")
+	local Labels = {
+		Mode = Status:AddLabel({ Text = "Mode: -" }),
+		Level = Status:AddLabel({ Text = "Level: -" }),
+		Gems = Status:AddLabel({ Text = "Gems: -" }),
+		Current = Status:AddLabel({ Text = "Current: -" }),
+		Flags = Status:AddLabel({ Text = "Summoned: - | Compass: - | Hunt: -" }),
+	}
+
+	local Actions = KaitunTab:AddSection({ Name = "Actions", IconName = "mouse-pointer-2" })
+	Actions:AddButton({
+		Text = "Claim everything now",
+		Tooltip = "Daily login, missions, level rewards, quests, battlepass (lobby only)",
+		Func = function()
+			if Loader.IsLobby then
+				task.spawn(ClaimAll)
+			else
+				Notify("Claim", "Only works in the lobby")
+			end
+		end,
+	})
+	Actions:AddButton({
+		Text = "Equip team now",
+		Tooltip = "Re-runs the team builder (lobby only)",
+		Func = function()
+			if Loader.IsLobby then
+				task.spawn(EquipTeam)
+			else
+				Notify("Equip", "Only works in the lobby")
+			end
+		end,
+	})
+	Actions:AddButton({
+		Text = "Leave match to lobby",
+		Func = function()
+			if Loader.IsLobby then
+				Notify("Leave", "Already in the lobby")
+			else
+				task.spawn(pcall, FireEndpoint, "teleport_back_to_lobby")
+			end
+		end,
+	})
+	Actions:AddButton({
+		Text = "Reset saved state",
+		DoubleClick = true,
+		Risky = true,
+		Tooltip = "Forgets: summoned once, compass used, group joined, hunt done, reported milestones, cleared challenges",
+		Func = function()
+			State.Summoned = false
+			State.CompassDone = false
+			State.GroupDone = false
+			State.GroupAttempts = 0
+			State.HuntDone = false
+			State.Hunted = {}
+			State.Reported = {}
+			State.ChallengeDone = {}
+			State.ChallengeSlot = 0
+			State.Current = nil
+			SaveState()
+			Notify("State", "Saved state reset")
+		end,
+	})
+
+	-- progression ------------------------------------------------------------
+	local Levels_ = ProgressTab:AddLeftSection("Levels", "bar-chart-3")
+	AddSlider(Levels_, "NormalChalLevel", "Normal challenge from level", Config, "NormalChallengeLevel", 1, 100, 0)
+	AddSlider(Levels_, "DailyChalLevel", "Daily challenge from level", Config, "DailyChallengeLevel", 1, 100, 0)
+	AddSlider(Levels_, "EndgameLevel", "Endgame level (act 6, then Infinite)", Config, "EndgameLevel", 1, 200, 0)
+	AddSlider(Levels_, "LoseWave", "Vote lose at wave", Config, "LoseWave", 1, 50, 0, "", "Story act 1 and Infinite only")
+
+	local Story = ProgressTab:AddRightSection("Story", "map")
+	AddSlider(Story, "StoryAct", "Early loop act", Config, "StoryAct", 1, 10, 0)
+	AddDropdown(Story, "StoryDifficulty", "Story difficulty", { "Normal", "Hard" }, Config.StoryDifficulty, function(Value)
+		Config.StoryDifficulty = Value
+	end)
+	AddToggle(Story, "SkipStory", "Use story skipper for the endgame act", Config, "SkipStory", "Off = play the acts in order")
+	AddInput(Story, "SkipWorld", "Skip world id (empty = first world)", Config.SkipWorld, function(Value)
+		Config.SkipWorld = Value ~= "" and Value or nil
+	end)
+	AddInput(Story, "SkipAct", "Skip act number (empty = last act)", Config.SkipAct, function(Value)
+		Config.SkipAct = tonumber(Value)
+	end, true)
+
+	local Chal = ProgressTab:AddSection({ Name = "Challenges & claiming", IconName = "flag" })
+	AddToggle(Chal, "TrustProfileForClear", "Trust profile for cleared challenges", Config, "TrustProfileForClear", "Also treat a challenge uuid found in your profile as cleared")
+	AddSlider(Chal, "MatchmakingRetries", "Matchmaking attempts", Config, "MatchmakingRetries", 1, 10, 0)
+	AddSlider(Chal, "QueueTimeout", "Queue timeout", Config, "QueueTimeout", 30, 300, 0, "s")
+	AddToggle(Chal, "ForceCodes", "Ignore code level gates", Config, "ForceCodes")
+	AddToggle(Chal, "AcceptMissions", "Accept daily board missions", Config, "AcceptMissions")
+
+	-- summon & team ----------------------------------------------------------
+	local BannerIds = {}
+	for Id in pairs(Banners) do
+		BannerIds[#BannerIds + 1] = tostring(Id)
+	end
+	table.sort(BannerIds)
+
+	local Hunt = SummonTab:AddLeftSection("Compass & hunt", "compass")
+	AddInput(Hunt, "HuntUnit", "Compass pick / hunt unit", Config.HuntUnit, function(Value)
+		local Unit = Value ~= "" and (NormalizeUnitId(Value) or Value:lower()) or nil
+		if Unit then
+			Config.HuntUnit = Unit
+			Config.CompassPick = Unit
+		end
+	end, false, "Unit id or display name")
+	AddInput(Hunt, "HuntGems", "Hunt when gems reach", Config.HuntGems, function(Value)
+		Config.HuntGems = NumberOr(Value, Config.HuntGems)
+	end, true)
+	AddInput(Hunt, "MinGems", "Never go below gems", Config.MinGems, function(Value)
+		Config.MinGems = NumberOr(Value, Config.MinGems)
+	end, true)
+	AddDropdown(Hunt, "SummonBanner", "First 10x banner", BannerIds, Config.SummonBanner, function(Value)
+		Config.SummonBanner = Value
+	end)
+	AddDropdown(Hunt, "HuntBanner", "Hunt banner", BannerIds, Config.HuntBanner, function(Value)
+		Config.HuntBanner = Value
+	end)
+	AddSlider(Hunt, "SummonHatchWait", "Hatch record wait", Config, "SummonHatchWait", 0, 10, 1, "s", "Lower = faster summoning")
+
+	local Team = SummonTab:AddRightSection("Team", "users")
+	AddInput(Team, "TeamUnits", "Team units (comma separated, in order)", table.concat(Config.TeamUnits or {}, ", "), function(Value)
+		local List = SplitList(Value)
+		Config.TeamUnits = #List > 0 and List or nil
+	end, false, "Empty = special team after the hunt, strongest units before it")
+	AddInput(Team, "BleedUnits", "Bleed units", table.concat(Config.BleedUnits, ", "), function(Value)
+		Config.BleedUnits = SplitList(Value)
+	end)
+	AddInput(Team, "BuffUnits", "Buff units", table.concat(Config.BuffUnits, ", "), function(Value)
+		Config.BuffUnits = SplitList(Value)
+	end)
+	AddInput(Team, "FarmUnits", "Farm units (first = highest priority)", table.concat(Config.FarmUnits, ", "), function(Value)
+		Config.FarmUnits = SplitList(Value)
+	end)
+	AddSlider(Team, "MaxBleed", "Max bleed units", Config, "MaxBleed", 0, 3, 0)
+	AddSlider(Team, "MaxBuff", "Max buff units", Config, "MaxBuff", 0, 4, 0)
+
+	-- match ------------------------------------------------------------------
+	local Place = MatchTab:AddLeftSection("Placement", "map-pin")
+	AddSlider(Place, "Percent", "Scan point along the path", Config, "Percent", 0, 100, 0, "%")
+	AddSlider(Place, "NodeSpacing", "Node spacing", Config, "NodeSpacing", 1, 6, 1)
+	AddSlider(Place, "RadiusGround", "Ground radius", Config, "RadiusGround", 5, 80, 0)
+	AddSlider(Place, "RadiusHill", "Hill radius", Config, "RadiusHill", 5, 80, 0)
+	AddSlider(Place, "RadiusFarm", "Farm ring width", Config, "RadiusFarm", 0, 40, 0)
+	AddDropdown(Place, "FarmTerrain", "Farm terrain", { "ground", "hill", "any" }, Config.FarmTerrain, function(Value)
+		Config.FarmTerrain = Value
+	end)
+	AddSlider(Place, "ActionDelay", "Delay between actions", Config, "ActionDelay", 0.05, 1, 2, "s")
+	AddSlider(Place, "RetryEvery", "Retry a failed unit after", Config, "RetryEvery", 1, 30, 0, "s")
+	AddSlider(Place, "RescanAfterFails", "Rescan after failed placements", Config, "RescanAfterFails", 2, 20, 0)
+	AddToggle(Place, "ShowVisuals", "Show scan nodes (applies next scan)", Config, "ShowVisuals", "Lots of parts: only for debugging")
+
+	local Fps = MatchTab:AddRightSection("FPS boost (matches only)", "gauge")
+	AddToggle(Fps, "FpsBoost", "FPS boost", Config, "FpsBoost", "Applies when the next match starts")
+	local Boost = Config.FpsSettings
+	AddToggle(Fps, "FpsStripSky", "Strip sky", Boost, "StripSky")
+	AddToggle(Fps, "FpsFlatTerrain", "Flat terrain", Boost, "FlatTerrain")
+	AddToggle(Fps, "FpsMute", "Mute sounds", Boost, "MuteSounds")
+	AddToggle(Fps, "FpsShadows", "Disable part shadows", Boost, "DisableShadows")
+	AddToggle(Fps, "FpsLightShadows", "Disable light shadows", Boost, "DisableLightShadows")
+	AddToggle(Fps, "FpsHideParts", "Hide parts", Boost, "HideParts")
+	AddToggle(Fps, "FpsStripGui", "Strip GUI", Boost, "StripGui")
+	AddToggle(Fps, "FpsFlatCam", "Flat top-down camera", Boost, "FlatTopDownCamera")
+	AddToggle(Fps, "Fps3D", "Disable 3D rendering", Boost, "Disable3DRender", "Screen goes black; Kaitun keeps running")
+	AddSlider(Fps, "FpsCap", "FPS cap (0 = off)", Boost, "FpsCap", 0, 240, 0, "", "Needs an executor with setfpscap")
+	local CapSlider = Library.Options and Library.Options.FpsCap
+	if CapSlider and CapSlider.OnChanged then
+		CapSlider:OnChanged(function(Value)
+			Boost.FpsCapSetter = (Value > 0 and type(setfpscap) == "function") and setfpscap or nil
+		end)
+	end
+
+	-- webhook ----------------------------------------------------------------
+	local Hook = WebhookTab:AddLeftSection("Discord webhook", "send")
+	AddInput(Hook, "WebhookUrl", "Webhook URL", Config.WebhookUrl, function(Value)
+		Config.WebhookUrl = Value
+	end, false, "Empty = reports off. Saved in your config file in plain text.")
+	AddInput(Hook, "WebhookName", "Bot name", Config.WebhookName, function(Value)
+		if Value ~= "" then
+			Config.WebhookName = Value
+		end
+	end)
+	AddInput(Hook, "WebhookPing", "Ping text (e.g. <@userid>)", Config.WebhookPing, function(Value)
+		Config.WebhookPing = Value
+	end)
+	AddDropdown(Hook, "WebhookMode", "Report mode", { "goal", "all", "none" }, Config.WebhookMode, function(Value)
+		Config.WebhookMode = Value
+	end, "goal = milestones only, all = + match events, none = off")
+	AddToggle(Hook, "WebhookShowName", "Show account name", Config, "WebhookShowName")
+	Hook:AddButton({
+		Text = "Send test report",
+		Func = function()
+			if Config.WebhookUrl == "" then
+				Notify("Webhook", "Set a webhook URL first")
+			else
+				SendWebhook("Test report", "Webhook is working.", 5793266)
+				Notify("Webhook", "Test sent")
+			end
+		end,
+	})
+
+	-- settings ---------------------------------------------------------------
+	local UiSec = SettingsTab:AddLeftSection("Interface", "layout-dashboard")
+	AddToggle(UiSec, "UiAutoHide", "Auto-hide after load", Config, "UiAutoHide", "Applies on the next execute")
+	AddSlider(UiSec, "UiAutoHideSeconds", "Auto-hide after", Config, "UiAutoHideSeconds", 2, 60, 0, "s")
+	UiSec:AddButton({
+		Text = "Hide UI now",
+		Func = function()
+			pcall(function()
+				Library:Toggle(false)
+			end)
+		end,
+	})
+	UiSec:AddButton({
+		Text = "Unload UI (Kaitun keeps running)",
+		DoubleClick = true,
+		Func = function()
+			pcall(function()
+				Library:Unload()
+			end)
+		end,
+	})
+
+	local BuiltAll = false
+	if SaveManager and ThemeManager and Library.BuildAllSettings then
+		BuiltAll = pcall(function()
+			Library:BuildAllSettings(SettingsTab, ThemeManager, SaveManager)
+		end)
+	end
+	if SaveManager and not BuiltAll then
+		pcall(function()
+			SaveManager:BuildConfigSection(SettingsTab)
+		end)
+	end
+
+	-- load the saved config (its callbacks write into Config), then reveal
+	if SaveManager then
+		pcall(function()
+			SaveManager:Init(Window)
+		end)
+	end
+
+	-- Kaitun always starts ON, whatever the saved config says
+	Config.Enabled = true
+	pcall(function()
+		Library.Toggles.KaitunEnabled:SetValue(true)
+	end)
+
+	-- live status
+	task.spawn(function()
+		while Alive() and not Library.Unloaded do
+			pcall(function()
+				local Current = State.Current
+				Labels.Mode:SetText("Mode: " .. (Loader.IsLobby and "Lobby" or "Match") .. (Config.Enabled and "" or " (paused)"))
+				Labels.Level:SetText("Level: " .. tostring(GetLevel()))
+				Labels.Gems:SetText("Gems: " .. tostring(GetGems()))
+				Labels.Current:SetText("Current: " .. (Current and tostring(Current.Kind) or "-"))
+				Labels.Flags:SetText(("Summoned: %s | Compass: %s | Hunt: %s"):format(
+					State.Summoned and "yes" or "no",
+					State.CompassDone and "yes" or "no",
+					State.HuntDone and "done" or "pending"
+				))
+			end)
+			task.wait(2)
+		end
+	end)
+
+	Notify("AA Kaitun", "Loaded — RightControl toggles the UI")
+
+	if Config.UiAutoHide then
+		task.delay(Config.UiAutoHideSeconds, function()
+			if Library.Toggled then
+				pcall(function()
+					Library:Toggle(false)
+				end)
+			end
+		end)
+	end
+end
+
 -- entry ------------------------------------------------------------------
 local function Main()
 	LoadState()
@@ -3765,6 +4228,22 @@ local function Main()
 		warn("[AA Kaitun] profile never loaded")
 		return
 	end
+	-- the UI loads first so saved settings are in Config before anything runs
+	if Config.Ui then
+		local UiDone = false
+		task.spawn(function()
+			local Ok, Err = pcall(BuildUi)
+			if not Ok then
+				warn("[AA Kaitun] ui error: " .. tostring(Err))
+			end
+			UiDone = true
+		end)
+		local UiDeadline = os.clock() + 25
+		while not UiDone and os.clock() < UiDeadline do
+			task.wait(0.1)
+		end
+	end
+
 	AntiAfk()
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
