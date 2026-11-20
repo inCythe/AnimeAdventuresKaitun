@@ -215,8 +215,8 @@ local Config = {
 -- user config via getgenv().Kaitun -----------------------------------------
 -- set this BEFORE running the script/loader, e.g.:
 --   getgenv().Kaitun = {
---       TargetLevel = 40, CompassUnit = "Elyssia",
---       Team = { "Bulby", "Windsong", "Speedwagon", "C.E.O.", "Hammergirl" },
+--       TargetLevel = 50, CompassUnit = "Elyssia",
+--       Team = { "Bulby", "Windsong", "C.E.O.", "Hammergirl" },
 --       StoryHard = false,
 --       RollAtGems = 20000, SaveGems = 0,
 --       FpsBoost = true,
@@ -521,10 +521,17 @@ local function NormalizeUnitId(Id)
 	end
 	if not UnitIdLookup then
 		UnitIdLookup = {}
-		for Key in pairs(Units) do
+		for Key, Def in pairs(Units) do
 			local K = tostring(Key)
 			UnitIdLookup[K:lower()] = K
 			UnitIdLookup[(K:lower():gsub("[^%w]", ""))] = K
+			-- display name (e.g. "C.E.O." -> "speedwagon", "Bulby" -> "bulma")
+			local Display = type(Def) == "table" and Def.name or nil
+			if type(Display) == "string" then
+				local D = Display:lower()
+				UnitIdLookup[D] = K
+				UnitIdLookup[(D:gsub("[^%w]", ""))] = K
+			end
 		end
 	end
 	return UnitIdLookup[Lower] or UnitIdLookup[Lower:gsub("[^%w]", "")] or Lower

@@ -16,10 +16,10 @@ Set `getgenv().Kaitun` **before** running the loader/script:
 
 ```lua
 getgenv().Kaitun = {
-	TargetLevel = 40,          -- level to switch to endgame/infinite (default 50)
+	TargetLevel = 50,          -- level to switch to endgame/infinite (default 50)
 	CompassUnit = "Elyssia",   -- celestial compass pick AND hunt target
 	Team = {                   -- units to equip, in order; unowned ones are skipped
-		"Bulby", "Windsong", "Speedwagon", "C.E.O.", "Hammergirl",
+		"Bulby", "Windsong", "C.E.O.", "Hammergirl",
 	},
 	StoryHard = false,         -- true = play story/endgame acts on Hard
 	RollAtGems = 20000,        -- go hunt when gems >= this
@@ -32,7 +32,9 @@ getgenv().Kaitun = {
 }
 ```
 
-Unit names are matched case-insensitively (`"C.E.O."` == `"ceo"` == `"c.e.o."`).
+Unit names are matched case/punctuation-insensitively against both ids and
+display names (`"C.E.O."`, `"ceo"`, `"speedwagon"` all resolve; `"Bulby"` =
+`bulma`, `"Windsong"` = `wendy`, `"Hammergirl"` = `nobara`).
 
 ## Auto-sell
 
