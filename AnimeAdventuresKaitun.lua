@@ -1102,6 +1102,12 @@ end
 
 -- ============================================================ LOBBY =====
 
+-- scope block: frees the lobby locals before the match section; only the
+-- entry points used later (RunLobby by Main, NeedHunt/CurrentSlot by the
+-- match planner) are exported through the forward declarations
+local RunLobby, NeedHunt, CurrentSlot
+do
+
 -- group + favorite -------------------------------------------------------
 local function UiRoots()
 	local Roots = { CoreGui }
@@ -1923,7 +1929,7 @@ local function SummonTenOnce()
 	end
 end
 
-local function NeedHunt()
+NeedHunt = function()
 	if State.HuntDone then
 		return false
 	end
@@ -2458,7 +2464,7 @@ end
 -- Challenges reset every :00 and :30. The slot number flips at each reset, so
 -- "slot changed since I last handled challenges" == "they reset, go check".
 -- Server time is used when available (immune to a wrong PC clock).
-local function CurrentSlot()
+CurrentSlot = function()
 	local Now = os.time()
 	local Ok, ServerNow = pcall(function()
 		return workspace:GetServerTimeNow()
@@ -2618,7 +2624,7 @@ local function Plan()
 	return JoinInfiniteLoop()
 end
 
-local function RunLobby()
+RunLobby = function()
 	Log("lobby mode")
 	GroupAndFavorite()
 	RedeemCodes()
@@ -2644,6 +2650,7 @@ local function RunLobby()
 		end
 	end
 end
+end -- end lobby scope block
 
 -- ============================================================ MATCH =====
 -- scope block: frees the match locals before Main() so the chunk stays
@@ -3684,9 +3691,31 @@ local function LoseWaveFor(Ctx)
 	return 0
 end
 
+-- match-start settings ----------------------------------------------------
+-- show_overheads / disable_effects persist server-side. Only invoke when the
+-- replicated _settings value is missing or different; keys that are not
+-- replicated are sent once per session so the remote cannot flip them every
+-- match if it turns out to be a toggle.
+local MatchSettingsSent = {}
+local function ApplyMatchSettings()
+	local Folder = Player:FindFirstChild("_settings")
+	for Name, Want in pairs({ show_overheads = false, disable_effects = true }) do
+		local Flag = Folder and Folder:FindFirstChild(Name)
+		if Flag and Flag:IsA("BoolValue") then
+			if Flag.Value ~= Want then
+				CallWithTimeout(10, InvokeServer, "toggle_setting", Name, Want)
+			end
+		elseif not MatchSettingsSent[Name] then
+			MatchSettingsSent[Name] = true
+			CallWithTimeout(10, InvokeServer, "toggle_setting", Name, Want)
+		end
+	end
+end
+
 RunInGame = function()
 	Log("match mode (%s)", CurrentContext().Kind)
 	ClearScanVisuals()
+	ApplyMatchSettings()
 
 	Placer.Core = Loader.load_core_service(nil, "PlacementCore")
 	Placer.Paths = Loader.load_core_service(nil, "PathService")
