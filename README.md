@@ -55,7 +55,8 @@ Set `AutoSell = false` to disable.
 ## Challenges-only mode
 
 Set `ChallengesOnlyAfterCompass = true` to stop the infinite grind once the
-celestial compass unit is owned (`CompassDone` or the unit is in the profile):
+celestial compass unit is actually summoned/owned — using the compass item
+alone does not trigger it:
 
 - infinite tower is never joined again (story still runs until `TargetLevel`,
   and act 6 is still attempted once)

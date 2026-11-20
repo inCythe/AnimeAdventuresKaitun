@@ -101,7 +101,31 @@ local function SafeLoad(Kind, Name)
 	return nil
 end
 
-local EndpointsClient = Loader.load_client_service(nil, "EndpointsClient")
+-- the client bootstrap calls Loader.init() only after SERVER_READY flips;
+-- every service/data lookup returns nil until the registries exist
+local BootDeadline = os.clock() + 90
+while Alive() do
+	local Flag = workspace:FindFirstChild("SERVER_READY")
+	if (Flag and Flag.Value == true) or os.clock() >= BootDeadline then
+		break
+	end
+	task.wait(0.5)
+end
+task.wait(0.5) -- let init() finish registering the services
+
+local EndpointsClient
+local LoadDeadline = os.clock() + 30
+repeat
+	EndpointsClient = SafeLoad("load_client_service", "EndpointsClient")
+	if EndpointsClient then
+		break
+	end
+	task.wait(0.5)
+until os.clock() >= LoadDeadline
+if not EndpointsClient then
+	warn("[AA Kaitun] EndpointsClient failed to load — wrong game or bootstrap stuck")
+	return
+end
 local InvokeServer = EndpointsClient.invoke_server
 local LevelServiceCore = SafeLoad("load_core_service", "LevelServiceCore")
 
@@ -2585,10 +2609,10 @@ local function Plan()
 		return true
 	end
 
-	-- challenges-only: once the compass unit is owned, never join infinite —
-	-- story still runs until EndgameLevel so low-level accounts keep progressing
-	if Config.ChallengesOnlyAfterCompass
-		and (State.CompassDone or HasUnit(Config.CompassPick)) then
+	-- challenges-only: once the compass unit is actually summoned/owned, never
+	-- join infinite — story still runs until EndgameLevel so low-level
+	-- accounts keep progressing (using the compass item alone does not count)
+	if Config.ChallengesOnlyAfterCompass and HasUnit(Config.CompassPick) then
 		return false
 	end
 	return JoinInfiniteLoop()
