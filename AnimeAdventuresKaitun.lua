@@ -205,8 +205,8 @@ local Config = {
 	DefaultSpawnCap = 5,
 
 	-- getgenv().Kaitun overrides (merged below)
-	WantedUnits = nil,           -- Kaitun.Wanted = { "elyssia", ... } — hunt list, in order
-	SupportUnits = nil,          -- Kaitun.Supports = { ... } — priority team units
+	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
+	AutoSell = true,             -- sell everything that is not on the team
 	StoryDifficulty = "Normal",  -- "Normal" | "Hard" (Kaitun.StoryHard)
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
@@ -215,12 +215,14 @@ local Config = {
 -- user config via getgenv().Kaitun -----------------------------------------
 -- set this BEFORE running the script/loader, e.g.:
 --   getgenv().Kaitun = {
---       TargetLevel = 40, WantedCompass = "Elyssia",
---       Wanted = { "Bulby", "C.E.O." }, Supports = { "Windsong" },
+--       TargetLevel = 40, CompassUnit = "Elyssia",
+--       Team = { "Bulby", "Windsong" },
 --       StoryTo = "All", StoryHard = false,
 --       RollAtGems = 20000, SaveGems = 0,
+--       FpsBoost = true,
 --       Webhook = "https://discord.com/api/webhooks/...",
 --       WebhookType = "Goal Only", WebhookPing = "",
+--       AutoSell = true,
 --   }
 local UserConfig = Env.Kaitun
 if type(UserConfig) == "table" then
@@ -230,14 +232,13 @@ if type(UserConfig) == "table" then
 	if Num(UserConfig.TargetLevel) then
 		Config.EndgameLevel = math.floor(Num(UserConfig.TargetLevel))
 	end
-	if UserConfig.WantedCompass ~= nil then
-		Config.CompassPick = tostring(UserConfig.WantedCompass):lower()
+	if UserConfig.CompassUnit ~= nil then
+		local Unit = tostring(UserConfig.CompassUnit):lower()
+		Config.CompassPick = Unit
+		Config.HuntUnit = Unit
 	end
-	if type(UserConfig.Wanted) == "table" then
-		Config.WantedUnits = UserConfig.Wanted
-	end
-	if type(UserConfig.Supports) == "table" then
-		Config.SupportUnits = UserConfig.Supports
+	if type(UserConfig.Team) == "table" then
+		Config.TeamUnits = UserConfig.Team
 	end
 	if Num(UserConfig.RollAtGems) then
 		Config.HuntGems = Num(UserConfig.RollAtGems)
@@ -247,6 +248,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.StoryHard ~= nil then
 		Config.StoryDifficulty = UserConfig.StoryHard and "Hard" or "Normal"
+	end
+	if UserConfig.FpsBoost ~= nil then
+		Config.FpsBoost = UserConfig.FpsBoost and true or false
 	end
 	if UserConfig.Webhook ~= nil then
 		Config.WebhookUrl = tostring(UserConfig.Webhook)
@@ -271,6 +275,9 @@ if type(UserConfig) == "table" then
 		else
 			Config.SkipAct = tonumber(To)
 		end
+	end
+	if UserConfig.AutoSell ~= nil then
+		Config.AutoSell = UserConfig.AutoSell and true or false
 	end
 end
 
@@ -505,7 +512,7 @@ local function HasUnit(UnitId)
 	return BestCopies()[UnitId] ~= nil or HatchedTotal(UnitId) > 0
 end
 
--- user-supplied unit ids (Kaitun.Wanted / Kaitun.Supports) are matched
+-- user-supplied unit ids (Kaitun.Team / Kaitun.CompassUnit) are matched
 -- case-insensitively against the Units data, ignoring punctuation
 local UnitIdLookup = nil
 local function NormalizeUnitId(Id)
@@ -531,27 +538,9 @@ local function NormalizeUnitId(Id)
 	return UnitIdLookup[Lower] or UnitIdLookup[Lower:gsub("[^%w]", "")] or Lower
 end
 
--- ordered hunt list: Kaitun.Wanted if set, otherwise the single HuntUnit
+-- the unit being hunted (CompassUnit sets both CompassPick and HuntUnit)
 local function HuntTargets()
-	local List = {}
-	if type(Config.WantedUnits) == "table" and #Config.WantedUnits > 0 then
-		for _, Id in ipairs(Config.WantedUnits) do
-			local Norm = NormalizeUnitId(Id)
-			if Norm then
-				List[#List + 1] = Norm
-			end
-		end
-	else
-		List[1] = Config.HuntUnit
-	end
-	local Seen, Out = {}, {}
-	for _, Id in ipairs(List) do
-		if not Seen[Id] then
-			Seen[Id] = true
-			Out[#Out + 1] = Id
-		end
-	end
-	return Out
+	return { Config.HuntUnit }
 end
 
 local function HuntRemaining()
@@ -1895,7 +1884,20 @@ local function BuildTeam()
 		return false
 	end
 
-	if State.HuntDone then
+	-- Kaitun.Team: equip these units in order, skipping ones you don't own
+	local TeamIds = {}
+	for _, Id in ipairs(Config.TeamUnits or {}) do
+		local Norm = NormalizeUnitId(Id)
+		if Norm then
+			TeamIds[#TeamIds + 1] = Norm
+		end
+	end
+
+	if #TeamIds > 0 then
+		for _, Id in ipairs(TeamIds) do
+			Add(Id)
+		end
+	elseif State.HuntDone then
 		for _, Id in ipairs(HuntTargets()) do
 			Add(Id)
 		end
@@ -1934,14 +1936,6 @@ local function BuildTeam()
 		end
 	end
 
-	-- user priority units (Kaitun.Supports)
-	for _, Id in ipairs(Config.SupportUnits or {}) do
-		local Norm = NormalizeUnitId(Id)
-		if Norm then
-			Add(Norm)
-		end
-	end
-
 	-- fill the remaining slots with the strongest units
 	local Ranked = {}
 	for UnitId, Copy in pairs(Best) do
@@ -1965,6 +1959,112 @@ local function SlotUuid(Slot)
 	local Equipped = Collection().equipped_units or {}
 	local Value = Equipped[Slot] or Equipped[tostring(Slot)]
 	return Value and tostring(Value) or nil
+end
+
+-- auto-sell ---------------------------------------------------------------
+-- keeps locked + equipped units, keeps ONE copy (best score, equipped copy
+-- preferred) of each team/compass/hunt unit, sells everything else.
+local function AutoSell()
+	local Owned = Collection().owned_units
+	if type(Owned) ~= "table" then
+		return
+	end
+
+	local Equipped = {}
+	for _, Uuid in pairs(Collection().equipped_units or {}) do
+		Equipped[tostring(Uuid)] = true
+	end
+
+	-- unit ids that are allowed to keep a copy
+	local KeepIds = {}
+	local function AddKeep(Id)
+		local Norm = Id and NormalizeUnitId(Id)
+		if Norm then
+			KeepIds[Norm] = true
+		end
+	end
+	AddKeep(Config.HuntUnit)
+	AddKeep(Config.CompassPick)
+	for _, Id in ipairs(Config.TeamUnits or {}) do
+		AddKeep(Id)
+	end
+	if not next(KeepIds) then
+		-- no explicit team: keep one copy of every equipped unit id
+		for Key, Unit in pairs(Owned) do
+			if type(Unit) == "table" and type(Unit.unit_id) == "string" then
+				local Uuid = type(Unit.uuid) == "string" and Unit.uuid or tostring(Key)
+				if Equipped[Uuid] or Equipped[tostring(Key)] then
+					KeepIds[Unit.unit_id] = true
+				end
+			end
+		end
+	end
+
+	-- unit ids of equipped units (the equipped copy is the keeper)
+	local EquippedIds = {}
+	for Key, Unit in pairs(Owned) do
+		if type(Unit) == "table" and type(Unit.unit_id) == "string" then
+			local Uuid = type(Unit.uuid) == "string" and Unit.uuid or tostring(Key)
+			if Equipped[Uuid] or Equipped[tostring(Key)] then
+				local Norm = NormalizeUnitId(Unit.unit_id)
+				if Norm then
+					EquippedIds[Norm] = true
+				end
+			end
+		end
+	end
+
+	-- group sellable copies by unit id
+	local Copies = {}
+	for Key, Unit in pairs(Owned) do
+		if type(Unit) == "table" and Unit._locked ~= true then
+			local Uuid = type(Unit.uuid) == "string" and Unit.uuid or tostring(Key)
+			local IsEquipped = Equipped[Uuid] or Equipped[tostring(Key)]
+			if not IsEquipped then
+				local Id = type(Unit.unit_id) == "string" and Unit.unit_id or nil
+				Copies[#Copies + 1] = {
+					Uuid = Uuid,
+					Id = Id and NormalizeUnitId(Id) or nil,
+					Score = ScoreUnit(Unit),
+				}
+			end
+		end
+	end
+
+	-- pick the one keeper per keep-id (highest score)
+	local Keeper = {}
+	for _, Copy in ipairs(Copies) do
+		if Copy.Id and KeepIds[Copy.Id] then
+			local Current = Keeper[Copy.Id]
+			if not Current or Copy.Score > Current.Score then
+				Keeper[Copy.Id] = Copy
+			end
+		end
+	end
+
+	local ToSell = {}
+	for _, Copy in ipairs(Copies) do
+		if Copy.Id and KeepIds[Copy.Id] then
+			-- keep exactly one copy: the equipped one, else the best unequipped
+			if not EquippedIds[Copy.Id] and Keeper[Copy.Id] == Copy then
+				continue
+			end
+		end
+		ToSell[#ToSell + 1] = Copy.Uuid
+	end
+
+	if #ToSell == 0 then
+		return
+	end
+	Log("auto-sell: %d unit(s)", #ToSell)
+	for Index = 1, #ToSell, 50 do
+		local Batch = {}
+		for J = Index, math.min(Index + 49, #ToSell) do
+			Batch[#Batch + 1] = ToSell[J]
+		end
+		pcall(InvokeServer, "sell_units", Batch)
+		task.wait(0.4)
+	end
 end
 
 local function EquipTeam()
@@ -2007,6 +2107,9 @@ local function EquipTeam()
 		end
 	end
 	Log("team equipped (%d units)%s", #Team, State.HuntDone and " [special]" or " [best]")
+	if Config.AutoSell then
+		AutoSell()
+	end
 end
 
 -- joining ----------------------------------------------------------------

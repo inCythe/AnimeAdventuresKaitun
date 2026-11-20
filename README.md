@@ -16,25 +16,35 @@ Set `getgenv().Kaitun` **before** running the loader/script:
 
 ```lua
 getgenv().Kaitun = {
-	TargetLevel = 40,        -- level to switch to endgame/infinite (default 50)
-	WantedCompass = "Elyssia", -- unit picked with the celestial compass
-	Wanted = {               -- units to hunt, in order (replaces HuntUnit)
-		"Bulby", "C.E.O.", "Commander", "Hammergirl", "Windsong",
+	TargetLevel = 40,          -- level to switch to endgame/infinite (default 50)
+	CompassUnit = "Elyssia",   -- celestial compass pick AND hunt target
+	Team = {                   -- units to equip, in order; unowned ones are skipped
+		"Bulby", "Windsong",
 	},
-	Supports = {             -- priority team units
-		"Bulby", "C.E.O.", "Commander", "Hammergirl", "Windsong",
-	},
-	StoryTo = "All",         -- "All" or an act number (story skipper target)
-	StoryHard = false,       -- true = play story/endgame acts on Hard
-	RollAtGems = 20000,      -- go hunt when gems >= this
-	SaveGems = 0,            -- never hunt below this many gems
+	StoryTo = "All",           -- "All" or an act number (story skipper target)
+	StoryHard = false,         -- true = play story/endgame acts on Hard
+	RollAtGems = 20000,        -- go hunt when gems >= this
+	SaveGems = 0,              -- never hunt below this many gems
+	FpsBoost = true,           -- FPS boost on execute (default true)
 	Webhook = "https://discord.com/api/webhooks/...", -- "" disables
 	WebhookType = "Goal Only", -- "Goal Only" milestones | "All" + match events | "None"
-	WebhookPing = "",        -- e.g. "<@123456789>" pinged on each webhook
+	WebhookPing = "",          -- e.g. "<@123456789>" pinged on each webhook
+	AutoSell = true,           -- sell units not on the team (see below)
 }
 ```
 
 Unit names are matched case-insensitively (`"C.E.O."` == `"ceo"` == `"c.e.o."`).
+
+## Auto-sell
+
+After the team is equipped (post-summon / post-hunt, lobby only):
+
+- locked and equipped units are never sold
+- each `CompassUnit`/`Team` unit keeps exactly **one** copy — the equipped one,
+  or the highest-scored copy if none is equipped
+- every other unit (all copies) is sold via `sell_units`
+
+Set `AutoSell = false` to disable.
 
 ## Files
 
