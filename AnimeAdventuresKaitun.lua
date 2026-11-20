@@ -187,14 +187,14 @@ local Config = {
 		HideParts = false,
 		StripGui = false,
 		Disable3DRender = false,
-		DisableShadows = false,
+		DisableShadows = true,
 		DisableLightShadows = false,
 		StripSky = true,
 		StripCharacter = false,
 		FlatTerrain = true,
 		SweepBackpack = false,
 		MuteSounds = true,
-		FpsCap = 0,
+		FpsCap = 15,
 		FpsCapRestore = 0,
 		FpsCapSetter = nil,
 	},
@@ -207,7 +207,9 @@ local Config = {
 	RadiusFarm = 10,
 	FarmTerrain = "ground",
 	ActionDelay = 0.2,
-	RetryEvery = 10,
+	RetryEvery = 3,               -- seconds before a unit retries after a failed placement
+	UnitSpacing = 3,              -- nodes this close to a placed unit are blocked
+	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
 	UpgradeRetry = 2,
 	VoteRetry = 2,
 	ShowVisuals = true,          -- draw scan nodes/rings/arrow like auto_place.lua
@@ -2112,13 +2114,12 @@ local function AutoSell()
 
 	local ToSell = {}
 	for _, Copy in ipairs(Copies) do
-		if Copy.Id and KeepIds[Copy.Id] then
-			-- keep exactly one copy: the equipped one, else the best unequipped
-			if not EquippedIds[Copy.Id] and Keeper[Copy.Id] == Copy then
-				continue
-			end
+		local KeepThis = Copy.Id and KeepIds[Copy.Id]
+			and not EquippedIds[Copy.Id] and Keeper[Copy.Id] == Copy
+		-- keep exactly one copy: the equipped one, else the best unequipped
+		if not KeepThis then
+			ToSell[#ToSell + 1] = Copy.Uuid
 		end
-		ToSell[#ToSell + 1] = Copy.Uuid
 	end
 
 	if #ToSell == 0 then
@@ -2637,6 +2638,11 @@ local Placer = {
 	Used = {},
 	LastAttempt = {},
 	UpgradeFail = {},
+	Fails = 0,
+	NeedScan = true,
+	ScanTries = 0,
+	LastScan = 0,
+	LastWarn = 0,
 	ModelIds = setmetatable({}, { __mode = "k" }),
 	Core = nil,
 	Paths = nil,
@@ -3116,7 +3122,10 @@ local function Rescan()
 	Placer.LastAttempt = {}
 	Placer.UpgradeFail = {}
 	Log("placement scan: %d nodes", #All)
-	VisualizeScan(Lanes)
+	if #All > 0 then
+		VisualizeScan(Lanes)
+	end
+	return #All
 end
 
 -- unit classification
@@ -3275,7 +3284,10 @@ local function ModelUnitId(Model)
 	if not Id and Units[Model.Name] then
 		Id = Model.Name
 	end
-	Placer.ModelIds[Model] = Id or false
+	-- only cache a hit; stats may not be replicated yet on a fresh model
+	if Id then
+		Placer.ModelIds[Model] = Id
+	end
 	return Id
 end
 
@@ -3313,13 +3325,24 @@ local function NodesFor(UnitId)
 	return Pool, Farm, (not Farm) and Terrain == "hill"
 end
 
+-- block every node within UnitSpacing of a placed unit
+local function MarkNearUsed(Position)
+	local Limit = Config.UnitSpacing * Config.UnitSpacing
+	for _, Node in ipairs(Placer.Nodes) do
+		local Dx, Dz = Node.Position.X - Position.X, Node.Position.Z - Position.Z
+		if Dx * Dx + Dz * Dz <= Limit then
+			Placer.Used[Node] = true
+		end
+	end
+end
+
+-- returns Placed, Reason ("nonode" = no free node, not a server failure)
 local function TryPlace(Uuid, UnitId)
 	local Pool, Farm, PreferPath = NodesFor(UnitId)
 	local Node = PickNode(Pool, Farm, PreferPath)
 	if not Node then
-		return false
+		return false, "nonode"
 	end
-	Placer.Used[Node] = true
 	local Cf = Node.CFrame
 	if Placer.Grid and Placer.Grid.get_closest_grid_point then
 		local Ok, Snapped = pcall(Placer.Grid.get_closest_grid_point, Cf)
@@ -3330,15 +3353,53 @@ local function TryPlace(Uuid, UnitId)
 	local Before = #PlayerUnitModels()
 	local Ok, Result = pcall(InvokeServer, "spawn_unit", Uuid, Cf)
 	if not (Ok and Result) then
-		Node.Bad = true
-		return false
+		-- a node only becomes permanently bad after failing twice
+		Node.Fails = (Node.Fails or 0) + 1
+		if Node.Fails >= 2 then
+			Node.Bad = true
+		end
+		return false, "server"
 	end
-	task.wait(Config.ActionDelay)
-	if #PlayerUnitModels() > Before then
-		Log("placed %s", UnitId)
-		return true
+	-- the server accepted it; give the model a moment to replicate
+	local Deadline = os.clock() + 2
+	repeat
+		task.wait(0.1)
+	until #PlayerUnitModels() > Before or os.clock() >= Deadline
+	Placer.Used[Node] = true
+	MarkNearUsed(Node.Position)
+	Log("placed %s", UnitId)
+	return true
+end
+
+-- (re)scan until nodes exist: the path cache can still be empty right when a
+-- match starts, and a failed run of placements also triggers a fresh scan
+local function EnsureScan()
+	local Missing = Placer.NeedScan or #Placer.Nodes == 0
+	local TooManyFails = Placer.Fails >= Config.RescanAfterFails
+	if not Missing and not TooManyFails then
+		return
 	end
-	return false
+	local Wait = 15
+	if Missing then
+		Wait = Placer.ScanTries < 15 and 2 or 10
+	end
+	if os.clock() - Placer.LastScan < Wait then
+		return
+	end
+	Placer.LastScan = os.clock()
+	Placer.ScanTries = Placer.ScanTries + 1
+	Placer.Fails = 0
+	local Ok, Count = pcall(Rescan)
+	if not Ok then
+		warn("[AA Kaitun] scan error: " .. tostring(Count))
+		return
+	end
+	if Count and Count > 0 then
+		Placer.NeedScan = false
+		Placer.ScanTries = 0
+	else
+		Placer.NeedScan = true
+	end
 end
 
 local function RunUpgrades()
@@ -3382,6 +3443,15 @@ local function RunUpgrades()
 end
 
 local function PlacementTick()
+	EnsureScan()
+	if #Placer.Nodes == 0 then
+		return
+	end
+	local Equipped = EquippedUuids()
+	if #Equipped == 0 and os.clock() - Placer.LastWarn > 15 then
+		Placer.LastWarn = os.clock()
+		Log("no equipped units found in the profile — nothing to place")
+	end
 	local Counts = {}
 	for _, Model in ipairs(PlayerUnitModels()) do
 		local UnitId = ModelUnitId(Model)
@@ -3389,16 +3459,23 @@ local function PlacementTick()
 			Counts[UnitId] = (Counts[UnitId] or 0) + 1
 		end
 	end
-	for _, Uuid in ipairs(EquippedUuids()) do
+	for _, Uuid in ipairs(Equipped) do
 		local UnitId = UnitIdForUuid(Uuid)
 		if UnitId and Units[UnitId] then
 			local CanRetry = os.clock() - (Placer.LastAttempt[Uuid] or 0) > Config.RetryEvery
 			local Money = GetMoney()
 			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry and (Money == nil or Money >= UnitCost(UnitId)) then
-				Placer.LastAttempt[Uuid] = os.clock()
-				if TryPlace(Uuid, UnitId) then
+				local Placed, Reason = TryPlace(Uuid, UnitId)
+				if Placed then
 					Counts[UnitId] = (Counts[UnitId] or 0) + 1
+					Placer.LastAttempt[Uuid] = nil
+					Placer.Fails = 0
 					task.wait(Config.ActionDelay)
+				else
+					Placer.LastAttempt[Uuid] = os.clock()
+					if Reason ~= "nonode" then
+						Placer.Fails = Placer.Fails + 1
+					end
 				end
 			end
 		end
@@ -3533,6 +3610,16 @@ local function RunInGame()
 	Placer.Paths = Loader.load_core_service(nil, "PathService")
 	Placer.Grid = SafeLoad("load_client_service", "PlacementServiceClient")
 
+	-- fps boost only runs inside a match
+	if Config.FpsBoost then
+		task.spawn(function()
+			if Env.AAKaitunFpsRestore then
+				pcall(Env.AAKaitunFpsRestore)
+			end
+			Env.AAKaitunFpsRestore = ApplyFpsBoost(Config.FpsSettings)
+		end)
+	end
+
 	local WasActive = false
 	local LoseVoted = false
 	local Handled = false
@@ -3560,10 +3647,13 @@ local function RunInGame()
 				WasActive = true
 				LoseVoted = false
 				Handled = false
-				local Ok, Err = pcall(Rescan)
-				if not Ok then
-					warn("[AA Kaitun] scan error: " .. tostring(Err))
-				end
+				-- the placement thread scans (and keeps retrying until nodes exist)
+				Placer.Nodes = {}
+				Placer.Used = {}
+				Placer.NeedScan = true
+				Placer.ScanTries = 0
+				Placer.Fails = 0
+				Placer.LastScan = 0
 			end
 
 			local LoseWave = LoseWaveFor(Ctx)
@@ -3614,14 +3704,6 @@ local function Main()
 			SaveState()
 		end)
 	end)
-	if Config.FpsBoost then
-		task.spawn(function()
-			if Env.AAKaitunFpsRestore then
-				pcall(Env.AAKaitunFpsRestore)
-			end
-			Env.AAKaitunFpsRestore = ApplyFpsBoost(Config.FpsSettings)
-		end)
-	end
 	StartMilestoneWatcher()
 
 	if Loader.IsLobby then
