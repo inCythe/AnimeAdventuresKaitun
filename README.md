@@ -43,11 +43,13 @@ display names (`"C.E.O."`, `"ceo"`, `"speedwagon"` all resolve; `"Bulby"` =
 
 ## Auto-sell
 
-After the team is equipped (post-summon / post-hunt, lobby only):
+After every hunt 10x roll, and again after the team is equipped
+(post-summon / post-hunt, lobby only — the first summon is excluded):
 
 - locked and equipped units are never sold
-- each `CompassUnit`/`Team` unit keeps exactly **one** copy — the equipped one,
-  or the highest-scored copy if none is equipped
+- each `CompassUnit`/`Team`/special-team (`BleedUnits`/`BuffUnits`/`FarmUnits`)
+  unit keeps exactly **one** copy — the equipped one, or the highest-scored
+  copy if none is equipped
 - every other unit (all copies) is sold via `sell_units`
 
 Set `AutoSell = false` to disable.

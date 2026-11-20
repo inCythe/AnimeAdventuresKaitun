@@ -1868,6 +1868,8 @@ local function RollTen(BannerId)
 	return Charged, Results
 end
 
+local AutoSell -- defined below; sells dupes after every 10x summon
+
 local function SummonTenOnce()
 	if State.Summoned then
 		return
@@ -1935,6 +1937,9 @@ local function HuntUnit()
 		local Charged, Results = RollTen(Config.HuntBanner)
 		if Charged then
 			Rolls = Rolls + 1
+			if Config.AutoSell then
+				AutoSell()
+			end
 		elseif #Results == 0 then
 			task.wait(0.5)
 		end
@@ -2042,8 +2047,8 @@ end
 
 -- auto-sell ---------------------------------------------------------------
 -- keeps locked + equipped units, keeps ONE copy (best score, equipped copy
--- preferred) of each team/compass/hunt unit, sells everything else.
-local function AutoSell()
+-- preferred) of each team/compass/hunt/special-team unit, sells everything else.
+AutoSell = function()
 	local Owned = Collection().owned_units
 	if type(Owned) ~= "table" then
 		return
@@ -2066,6 +2071,13 @@ local function AutoSell()
 	AddKeep(Config.CompassPick)
 	for _, Id in ipairs(Config.TeamUnits or {}) do
 		AddKeep(Id)
+	end
+	-- special-team units keep one copy too, or per-roll selling during the
+	-- hunt would wipe them before BuildTeam switches to the special team
+	for _, List in ipairs({ Config.BleedUnits, Config.BuffUnits, Config.FarmUnits }) do
+		for _, Id in ipairs(List or {}) do
+			AddKeep(Id)
+		end
 	end
 	if not next(KeepIds) then
 		-- no explicit team: keep one copy of every equipped unit id
