@@ -552,6 +552,13 @@ local function HasUnit(UnitId)
 	return BestCopies()[UnitId] ~= nil or HatchedTotal(UnitId) > 0
 end
 
+-- challenges run when enabled outright, or when challenges-only mode is on
+-- and the compass unit has actually been obtained
+local function ChallengesEnabled()
+	return Config.Challenges == true
+		or (Config.ChallengesOnlyAfterCompass == true and HasUnit(Config.CompassUnit))
+end
+
 -- user-supplied unit ids (Kaitun.Team / Kaitun.CompassUnit) are matched
 -- case-insensitively against the Units data, ignoring punctuation
 local UnitIdLookup = nil
@@ -3157,7 +3164,7 @@ local function Plan()
 		end
 	end
 
-	if Config.Challenges then
+	if ChallengesEnabled() then
 		local Slot = CurrentSlot()
 		local Def, Uuid, Reachable = PickChallenge(Level)
 		if Reachable then
@@ -4342,7 +4349,7 @@ local function DecideAfterMatch(Ctx)
 
 	-- challenges reset at :00 and :30 — if a reset passed since the lobby last
 	-- handled them, go back and check (get_*_challenge only works in the lobby)
-	if Config.Challenges and Level >= Config.NormalChallengeLevel and CurrentSlot() > (State.ChallengeSlot or 0) then
+	if ChallengesEnabled() and Level >= Config.NormalChallengeLevel and CurrentSlot() > (State.ChallengeSlot or 0) then
 		Log("challenge reset passed -> leaving to check them")
 		return "Leave"
 	end
@@ -4495,7 +4502,7 @@ RunInGame = function()
 
 			-- a challenge reset is coming: leave early so the lobby queue is
 			-- already open when the new challenges land (once per reset)
-			if Config.Challenges and os.clock() - LastResetCheck > 5 then
+			if ChallengesEnabled() and os.clock() - LastResetCheck > 5 then
 				LastResetCheck = os.clock()
 				local Left, Boundary = NextResetInfo()
 				if GetLevel() >= Config.NormalChallengeLevel
