@@ -64,14 +64,6 @@ local GetGc, HookFunction, IsLClosure = getgc, hookfunction, islclosure
 local FireSignal = firesignal
 local GetHui = gethui
 
--- single instance guard --------------------------------------------------
-local Token = {}
-Env.AAKaitunToken = Token
-
-local function Alive()
-	return Env.AAKaitunToken == Token
-end
-
 -- teleport re-queue ------------------------------------------------------
 -- Registers the loader stub with the executor's queue_on_teleport so this
 -- script starts again automatically after every server hop (lobby -> match
@@ -100,7 +92,7 @@ end
 -- the client bootstrap calls Loader.init() only after SERVER_READY flips;
 -- every service/data lookup returns nil until the registries exist
 local BootDeadline = os.clock() + 90
-while Alive() do
+while true do
 	local Flag = workspace:FindFirstChild("SERVER_READY")
 	if (Flag and Flag.Value == true) or os.clock() >= BootDeadline then
 		break
@@ -437,7 +429,7 @@ end
 
 local function WaitForSession()
 	local Deadline = os.clock() + 90
-	while Alive() and os.clock() < Deadline do
+	while true and os.clock() < Deadline do
 		local Session = EndpointsClient.session
 		if Session and Session.profile_data then
 			return true
@@ -1118,7 +1110,7 @@ local Milestones = {
 
 local function StartMilestoneWatcher()
 	task.spawn(function()
-		while Alive() do
+		while true do
 			for _, Milestone in ipairs(Milestones) do
 				if not State.Reported[Milestone.Key] then
 					local Ok, Reached = pcall(Milestone.Check)
@@ -1621,7 +1613,7 @@ local function StartStatsOverlay()
 	}):Play()
 
 	task.spawn(function()
-		while Alive() do
+		while true do
 			if BlackOn then
 				pcall(Refresh)
 			end
@@ -2485,7 +2477,7 @@ local function HuntUnit()
 	local Hatched = {} -- UnitId -> { Normal, Shiny } totals across all rolls
 	Log("hunting %s on %s", Target, Config.HuntBanner)
 
-	while Alive() do
+	while true do
 		if HasUnit(Target) or HatchedTotal(Target) > BaseHatched then
 			State.Hunted[Target] = true
 			if #HuntRemaining() == 0 then
@@ -3282,7 +3274,7 @@ local function StartLobbyWidget()
 
 	-- slide the bar back and forth forever
 	task.spawn(function()
-		while Alive() do
+		while true do
 			local TrackW = Track.AbsoluteSize.X
 			if TrackW > 0 then
 				Fill.Size = UDim2.fromOffset(math.min(60, TrackW * 0.4), 1)
@@ -3312,7 +3304,7 @@ local function StartLobbyWidget()
 	end
 
 	task.spawn(function()
-		while Alive() do
+		while true do
 			pcall(Refresh)
 			task.wait(1)
 		end
@@ -3333,7 +3325,7 @@ RunLobby = function()
 	SummonTenOnce()
 	EquipTeam()
 
-	while Alive() and Loader.IsLobby do
+	while true and Loader.IsLobby do
 		local Ok, Requested = pcall(Plan)
 		if not Ok then
 			Log("plan error: %s", tostring(Requested))
@@ -3345,7 +3337,7 @@ RunLobby = function()
 		-- challenges-only, failed join) re-plan after IdleWait instead of
 		-- sitting out the full timeout
 		local Started = os.clock()
-		while Alive() and Loader.IsLobby do
+		while true and Loader.IsLobby do
 			task.wait(1)
 			local Limit = Requested
 				and (MatchmakingGui() and Config.QueueTimeout or Config.JoinTimeout)
@@ -3354,7 +3346,7 @@ RunLobby = function()
 				break
 			end
 		end
-		if Alive() and MatchmakingGui() then
+		if true and MatchmakingGui() then
 			Log("queued too long (%ds) -> leaving matchmaking, retrying in %ds", math.floor(os.clock() - Started), Config.MatchmakingRetryWait)
 			CallWithTimeout(10, InvokeServer, "leave_matchmaking")
 			task.wait(Config.MatchmakingRetryWait)
@@ -4381,7 +4373,7 @@ local function FinishMatch(Ctx)
 			task.wait(0.5)
 		end
 	end
-	while Alive() and not Transitioned() do
+	while true and not Transitioned() do
 		pcall(FireEndpoint, "teleport_back_to_lobby")
 		task.wait(0.5)
 	end
@@ -4454,7 +4446,7 @@ RunInGame = function()
 
 	-- placement / upgrades on their own thread
 	task.spawn(function()
-		while Alive() do
+		while true do
 			if MatchActive() then
 				local Ok, Err = pcall(PlacementTick)
 				if not Ok then
@@ -4465,7 +4457,7 @@ RunInGame = function()
 		end
 	end)
 
-	while Alive() do
+	while true do
 		local Ctx = CurrentContext()
 		pcall(AutoVotes)
 
