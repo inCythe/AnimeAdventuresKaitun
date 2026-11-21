@@ -1490,7 +1490,7 @@ local function StartStatsOverlay()
 		Size = UDim2.new(1, 0, 0, 16),
 		TextSize = 12,
 		TextColor3 = Theme.Muted,
-		Text = "RightControl toggles the UI  ·  Kaitun keeps running",
+		Text = "Toggle Black Screen via the Button on the Bottom Right",
 	})
 
 	local StartedAt = tick()
