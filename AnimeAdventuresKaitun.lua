@@ -1138,7 +1138,7 @@ local function StartStatsOverlay()
 	Gui.Name = "AAKaitunStats"
 	Gui.ResetOnSpawn = false
 	Gui.IgnoreGuiInset = true
-	Gui.DisplayOrder = 50
+	Gui.DisplayOrder = 1000
 	Gui.Parent = Parent
 
 	local Black = Instance.new("Frame")
@@ -1152,7 +1152,7 @@ local function StartStatsOverlay()
 	local Panel = Instance.new("Frame")
 	Panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	Panel.Position = UDim2.fromScale(0.5, 0.5)
-	Panel.Size = UDim2.fromOffset(480, 320)
+	Panel.Size = UDim2.fromOffset(480, 340)
 	Panel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 	Panel.BorderSizePixel = 0
 	Panel.Parent = Black
@@ -1172,17 +1172,101 @@ local function StartStatsOverlay()
 	Title.Text = "AA Kaitun"
 	Title.Parent = Panel
 
-	local Stats = Instance.new("TextLabel")
-	Stats.Size = UDim2.new(1, -20, 0, 170)
-	Stats.Position = UDim2.fromOffset(10, 42)
-	Stats.BackgroundTransparency = 1
-	Stats.Font = Enum.Font.Gotham
-	Stats.TextSize = 15
-	Stats.TextColor3 = Color3.fromRGB(220, 220, 225)
-	Stats.TextXAlignment = Enum.TextXAlignment.Left
-	Stats.TextYAlignment = Enum.TextYAlignment.Top
-	Stats.Text = ""
-	Stats.Parent = Panel
+	-- resolve an item icon from the game's Items data module; the module
+	-- layout varies, so scan for an entry matching the id and pull any
+	-- image-ish field out of it
+	local ItemData = SafeLoad("load_data", "Items") or {}
+	local IconCache = {}
+	local function FindItemIcon(Id)
+		if IconCache[Id] ~= nil then
+			return IconCache[Id]
+		end
+		local Found = false
+		local function Take(Value)
+			if type(Value) == "number" then
+				Found = "rbxassetid://" .. tostring(Value)
+			elseif type(Value) == "string" then
+				if Value:match("^%d+$") then
+					Found = "rbxassetid://" .. Value
+				elseif Value:find("rbxassetid") or Value:find("http") then
+					Found = Value
+				end
+			end
+		end
+		local function Scan(Node, Depth)
+			if Found or type(Node) ~= "table" or Depth > 4 then
+				return
+			end
+			for Key, Value in pairs(Node) do
+				if Found then
+					return
+				end
+				if type(Value) == "table" then
+					local EntryId = Value.id or Value.Id or Value.item_id or Value.ItemId or Value.name or Value.Name
+					if EntryId == Id or Key == Id then
+						for _, Field in ipairs({ "icon", "Icon", "image", "Image", "icon_id", "image_id", "thumbnail", "Thumbnail", "pic", "Pic", "imageId", "iconId" }) do
+							Take(Value[Field])
+							if Found then
+								return
+							end
+						end
+					end
+					Scan(Value, Depth + 1)
+				end
+			end
+		end
+		pcall(Scan, ItemData, 0)
+		IconCache[Id] = Found or false
+		return IconCache[Id]
+	end
+
+	local function AddRow(Y, IconIds)
+		local Row = Instance.new("Frame")
+		Row.Size = UDim2.new(1, -20, 0, 24)
+		Row.Position = UDim2.fromOffset(10, Y)
+		Row.BackgroundTransparency = 1
+		Row.Parent = Panel
+
+		local Icon = Instance.new("ImageLabel")
+		Icon.Size = UDim2.fromOffset(22, 22)
+		Icon.Position = UDim2.fromOffset(0, 1)
+		Icon.BackgroundTransparency = 1
+		Icon.ScaleType = Enum.ScaleType.Fit
+		Icon.Visible = false
+		Icon.Parent = Row
+		if IconIds then
+			for _, Id in ipairs(IconIds) do
+				local Image = FindItemIcon(Id)
+				if Image then
+					Icon.Image = Image
+					Icon.Visible = true
+					break
+				end
+			end
+		end
+
+		local Label = Instance.new("TextLabel")
+		Label.Size = UDim2.new(1, -30, 1, 0)
+		Label.Position = UDim2.fromOffset(30, 0)
+		Label.BackgroundTransparency = 1
+		Label.Font = Enum.Font.Gotham
+		Label.TextSize = 15
+		Label.TextColor3 = Color3.fromRGB(220, 220, 225)
+		Label.TextXAlignment = Enum.TextXAlignment.Left
+		Label.Text = ""
+		Label.Parent = Row
+
+		return Label
+	end
+
+	local RowAccount = AddRow(44)
+	local RowUptime = AddRow(70)
+	local RowLevel = AddRow(96)
+	local RowGems = AddRow(122, { "gem", "gems", "gem_item" })
+	local RowTokens = AddRow(148, { "trait_reroll_token", "reroll_token", "trait_token", "reroll_stat_all", "token_trait_reroll" })
+	local RowRerolls = AddRow(174, { "trait_reroll_token", "reroll_token", "trait_token", "reroll_stat_all" })
+	local RowRemnants = AddRow(200, { "star_remnant", "star_remnant_limited" })
+	local RowUnits = AddRow(226, { "unit", "units" })
 
 	local function MakeBar(Y, Caption, Color)
 		local Cap = Instance.new("TextLabel")
@@ -1212,8 +1296,8 @@ local function StartStatsOverlay()
 		return Fill
 	end
 
-	local LevelFill = MakeBar(218, "Level progress", Color3.fromRGB(90, 160, 255))
-	local GemFill = MakeBar(258, "Gems to hunt", Color3.fromRGB(120, 220, 140))
+	local LevelFill = MakeBar(258, "Level progress", Color3.fromRGB(90, 160, 255))
+	local GemFill = MakeBar(298, "Gems to hunt", Color3.fromRGB(120, 220, 140))
 
 	local StartedAt = os.clock()
 
@@ -1231,16 +1315,14 @@ local function StartStatsOverlay()
 		local Gems = GetGems()
 		local Up = math.floor(os.clock() - StartedAt)
 		local UpText = ("%02d:%02d:%02d"):format(math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
-		Stats.Text = table.concat({
-			Player.Name,
-			("Uptime: %s"):format(UpText),
-			("Level: %d"):format(Level),
-			("Gems: %s"):format(Fmt(Gems)),
-			("Reroll Tokens: %s"):format(Fmt(Prof.trait_reroll_tokens)),
-			("Total Rerolls: %s"):format(Fmt(Prof.total_trait_rerolls)),
-			("Remnants: %s  (Ltd: %s)"):format(Fmt(Items.star_remnant), Fmt(Items.star_remnant_limited)),
-			("Units owned: %d"):format(Owned),
-		}, "\n")
+		RowAccount.Text = Player.Name
+		RowUptime.Text = ("Uptime: %s"):format(UpText)
+		RowLevel.Text = ("Level: %d"):format(Level)
+		RowGems.Text = ("Gems: %s"):format(Fmt(Gems))
+		RowTokens.Text = ("Reroll Tokens: %s"):format(Fmt(Prof.trait_reroll_tokens))
+		RowRerolls.Text = ("Total Rerolls: %s"):format(Fmt(Prof.total_trait_rerolls))
+		RowRemnants.Text = ("Remnants: %s  (Ltd: %s)"):format(Fmt(Items.star_remnant), Fmt(Items.star_remnant_limited))
+		RowUnits.Text = ("Units owned: %d"):format(Owned)
 		LevelFill.Size = UDim2.new(math.clamp(Level / math.max(Config.EndgameLevel, 1), 0, 1), 0, 1, 0)
 		GemFill.Size = UDim2.new(math.clamp(Gems / math.max(Config.HuntGems, 1), 0, 1), 0, 1, 0)
 	end
