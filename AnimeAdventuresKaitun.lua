@@ -194,7 +194,7 @@ local Config = {
 	TrustProfileForClear = false, -- true = also treat a challenge uuid found in the profile as cleared
 	MatchmakingRetryWait = 21,
 	MatchmakingRetries = 5,
-	QueueTimeout = 90,
+	QueueTimeout = 300,            -- leave matchmaking after this long and re-queue
 
 	-- webhook reports (leave the url empty to disable)
 	WebhookUrl = "",
