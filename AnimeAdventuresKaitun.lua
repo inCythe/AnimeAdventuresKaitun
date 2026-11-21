@@ -3262,28 +3262,30 @@ local function StartLobbyWidget()
 		Size = UDim2.new(1, -28, 0, 8),
 		BackgroundColor3 = Color3.fromRGB(45, 45, 55),
 		BorderSizePixel = 0,
+		ClipsDescendants = true,
 	}, Card)
 	New("UICorner", { CornerRadius = UDim.new(0, 4) }, Track)
 	local Fill = New("Frame", {
-		Size = UDim2.fromOffset(60, 1),
+		Size = UDim2.new(0, 60, 1, 0),
 		Position = UDim2.fromOffset(-60, 0),
 		BackgroundColor3 = Color3.fromRGB(110, 150, 255),
 		BorderSizePixel = 0,
 	}, Track)
 	New("UICorner", { CornerRadius = UDim.new(0, 4) }, Fill)
 
-	-- slide the bar back and forth forever
+	-- slide the bar back and forth inside the track
 	task.spawn(function()
 		while true do
 			local TrackW = Track.AbsoluteSize.X
 			if TrackW > 0 then
-				Fill.Size = UDim2.fromOffset(math.min(60, TrackW * 0.4), 1)
+				local FillW = math.min(60, TrackW * 0.4)
+				Fill.Size = UDim2.new(0, FillW, 1, 0)
 				Tween:Create(Fill, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-					Position = UDim2.fromOffset(TrackW - Fill.Size.X.Offset, 0),
+					Position = UDim2.fromOffset(TrackW - FillW, 0),
 				}):Play()
 				task.wait(1.15)
 				Tween:Create(Fill, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
-					Position = UDim2.fromOffset(-Fill.Size.X.Offset, 0),
+					Position = UDim2.fromOffset(0, 0),
 				}):Play()
 				task.wait(1.15)
 			else
