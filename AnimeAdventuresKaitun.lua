@@ -219,6 +219,7 @@ local Config = {
 	RadiusFarm = 10,
 	FarmTerrain = "ground",
 	ActionDelay = 0.1,
+	PlaceRetries = 1,             -- node attempts per unit per tick before giving up
 	RetryEvery = 1,               -- seconds before a unit retries after a failed placement
 	SummonHatchWait = 2,          -- max seconds to wait for the hatch record after a 10x
 	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
@@ -4153,7 +4154,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 end
 
 local function TryPlace(Uuid, UnitId)
-	for _ = 1, 8 do
+	for _ = 1, math.max(1, tonumber(Config.PlaceRetries) or 1) do
 		local Placed, Reason = Placer.PlaceOnce(Uuid, UnitId)
 		if Reason ~= "occupied" then
 			return Placed, Reason
