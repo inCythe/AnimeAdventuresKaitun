@@ -1125,11 +1125,15 @@ local function StartMilestoneWatcher()
 end
 
 -- stats overlay -------------------------------------------------------------
--- black screen + live account panel; 3D rendering is disabled for fps
+-- full-screen dark screen with a live account dashboard; 3D rendering is
+-- disabled for fps. Logo on top, stat cards with the game's own icons,
+-- animated status pill and progress bars.
 local function StartStatsOverlay()
-	-- PlayerGui keeps the panel under the CoreGui (topbar, chat, menus)
-	local Parent = PlayerGui
-	local Old = Parent:FindFirstChild("AAKaitunStats")
+	local TweenService = game:GetService("TweenService")
+	local Camera = workspace.CurrentCamera
+
+	local Holder = PlayerGui
+	local Old = Holder:FindFirstChild("AAKaitunStats")
 	if Old then
 		Old:Destroy()
 	end
@@ -1137,167 +1141,353 @@ local function StartStatsOverlay()
 	local Gui = Instance.new("ScreenGui")
 	Gui.Name = "AAKaitunStats"
 	Gui.ResetOnSpawn = false
-	Gui.IgnoreGuiInset = false
+	Gui.IgnoreGuiInset = true
 	Gui.DisplayOrder = 1000
-	Gui.Parent = Parent
+	Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	Gui.Parent = Holder
 
-	local Black = Instance.new("Frame")
-	Black.Name = "Black"
-	Black.Size = UDim2.fromScale(1, 1)
-	Black.BackgroundColor3 = Color3.new(0, 0, 0)
-	Black.BorderSizePixel = 0
-	Black.Active = false
-	Black.Parent = Gui
+	local Theme = {
+		Back = Color3.fromRGB(6, 8, 15),
+		Back2 = Color3.fromRGB(18, 14, 38),
+		Panel = Color3.fromRGB(12, 15, 27),
+		Card = Color3.fromRGB(20, 24, 42),
+		Stroke = Color3.fromRGB(52, 60, 100),
+		Text = Color3.fromRGB(245, 247, 255),
+		Muted = Color3.fromRGB(150, 160, 192),
+		Accent = Color3.fromRGB(110, 150, 255),
+		Accent2 = Color3.fromRGB(190, 120, 255),
+		Good = Color3.fromRGB(110, 230, 150),
+		Warn = Color3.fromRGB(255, 184, 90),
+	}
 
-	local Panel = Instance.new("Frame")
-	Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	Panel.Position = UDim2.fromScale(0.5, 0.5)
-	Panel.Size = UDim2.fromOffset(480, 340)
-	Panel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-	Panel.BorderSizePixel = 0
-	Panel.Parent = Black
+	local Icons = {
+		Rerolls = "rbxassetid://99186363801156",   -- Trait Rerolls
+		Remnants = "rbxassetid://137988080790367", -- Star Remnants
+		Compass = "rbxassetid://137369120766463",  -- Celestial Compass
+		Gems = "rbxassetid://71405874061254",      -- Gems
+		Logo = "rbxassetid://73535842368256",      -- Anime Adventures logo
+	}
 
-	local PanelCorner = Instance.new("UICorner")
-	PanelCorner.CornerRadius = UDim.new(0, 10)
-	PanelCorner.Parent = Panel
+	local ActivityNames = {
+		Story1 = "Story loop",
+		Act6 = "Story act clear",
+		Infinite = "Infinite",
+		Normal = "Normal challenge",
+		Daily = "Daily challenge",
+	}
 
-	local Title = Instance.new("TextLabel")
-	Title.Size = UDim2.new(1, -20, 0, 28)
-	Title.Position = UDim2.fromOffset(10, 8)
-	Title.BackgroundTransparency = 1
-	Title.Font = Enum.Font.GothamBold
-	Title.TextSize = 18
-	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	Title.TextXAlignment = Enum.TextXAlignment.Left
-	Title.Text = "AA Kaitun"
-	Title.Parent = Panel
-
-	-- resolve an item icon from the game's Items data module; the module
-	-- layout varies, so scan for an entry matching the id and pull any
-	-- image-ish field out of it
-	local ItemData = SafeLoad("load_data", "Items") or {}
-	local IconCache = {}
-	local function FindItemIcon(Id)
-		if IconCache[Id] ~= nil then
-			return IconCache[Id]
+	local function New(Class, Props, Parent)
+		local Item = Instance.new(Class)
+		for Key, Value in pairs(Props) do
+			Item[Key] = Value
 		end
-		local Found = false
-		local function Take(Value)
-			if type(Value) == "number" then
-				Found = "rbxassetid://" .. tostring(Value)
-			elseif type(Value) == "string" then
-				if Value:match("^%d+$") then
-					Found = "rbxassetid://" .. Value
-				elseif Value:find("rbxassetid") or Value:find("http") then
-					Found = Value
-				end
-			end
-		end
-		local function Scan(Node, Depth)
-			if Found or type(Node) ~= "table" or Depth > 4 then
-				return
-			end
-			for Key, Value in pairs(Node) do
-				if Found then
-					return
-				end
-				if type(Value) == "table" then
-					local EntryId = Value.id or Value.Id or Value.item_id or Value.ItemId or Value.name or Value.Name
-					if EntryId == Id or Key == Id then
-						for _, Field in ipairs({ "icon", "Icon", "image", "Image", "icon_id", "image_id", "thumbnail", "Thumbnail", "pic", "Pic", "imageId", "iconId" }) do
-							Take(Value[Field])
-							if Found then
-								return
-							end
-						end
-					end
-					Scan(Value, Depth + 1)
-				end
-			end
-		end
-		pcall(Scan, ItemData, 0)
-		IconCache[Id] = Found or false
-		return IconCache[Id]
+		Item.Parent = Parent
+		return Item
 	end
 
-	local function AddRow(Y, IconIds)
-		local Row = Instance.new("Frame")
-		Row.Size = UDim2.new(1, -20, 0, 24)
-		Row.Position = UDim2.fromOffset(10, Y)
-		Row.BackgroundTransparency = 1
-		Row.Parent = Panel
+	local function Round(Item, Radius)
+		return New("UICorner", { CornerRadius = UDim.new(0, Radius) }, Item)
+	end
 
-		local Icon = Instance.new("ImageLabel")
-		Icon.Size = UDim2.fromOffset(22, 22)
-		Icon.Position = UDim2.fromOffset(0, 1)
-		Icon.BackgroundTransparency = 1
-		Icon.ScaleType = Enum.ScaleType.Fit
-		Icon.Visible = false
-		Icon.Parent = Row
-		if IconIds then
-			for _, Id in ipairs(IconIds) do
-				local Image = FindItemIcon(Id)
-				if Image then
-					Icon.Image = Image
-					Icon.Visible = true
-					break
-				end
-			end
+	local function Label(Parent, Props)
+		Props.BackgroundTransparency = 1
+		Props.Font = Props.Font or Enum.Font.Gotham
+		Props.TextColor3 = Props.TextColor3 or Theme.Text
+		return New("TextLabel", Props, Parent)
+	end
+
+	-- animated gradient outline
+	local function GradientStroke(Parent, Thickness)
+		local Stroke = New("UIStroke", {
+			Color = Color3.new(1, 1, 1),
+			Thickness = Thickness,
+			Transparency = 0.3,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		}, Parent)
+		local Gradient = New("UIGradient", {
+			Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Theme.Accent),
+				ColorSequenceKeypoint.new(0.5, Theme.Accent2),
+				ColorSequenceKeypoint.new(1, Theme.Accent),
+			}),
+		}, Stroke)
+		TweenService:Create(Gradient, TweenInfo.new(8, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
+			Rotation = 360,
+		}):Play()
+	end
+
+	-- background -------------------------------------------------------------
+	local Back = New("Frame", {
+		Name = "Black",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.Back,
+		BorderSizePixel = 0,
+		Active = false,
+	}, Gui)
+	New("UIGradient", {
+		Rotation = 65,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Theme.Back),
+			ColorSequenceKeypoint.new(0.55, Theme.Back2),
+			ColorSequenceKeypoint.new(1, Theme.Back),
+		}),
+	}, Back)
+
+	local Glow = New("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, -260),
+		Size = UDim2.fromOffset(760, 760),
+		BackgroundColor3 = Theme.Accent,
+		BackgroundTransparency = 0.88,
+		BorderSizePixel = 0,
+	}, Back)
+	Round(Glow, 380)
+	New("UIGradient", {
+		Rotation = 90,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.1),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	}, Glow)
+
+	-- content ------------------------------------------------------------------
+	local Content = New("CanvasGroup", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(620, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		GroupTransparency = 1,
+	}, Back)
+	New("UIListLayout", {
+		Padding = UDim.new(0, 12),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, Content)
+
+	local Scale = New("UIScale", {}, Content)
+	local function Rescale()
+		local View = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
+		Scale.Scale = math.clamp(math.min(View.X / 700, View.Y / 700), 0.45, 1.3)
+	end
+	Rescale()
+	if Camera then
+		Camera:GetPropertyChangedSignal("ViewportSize"):Connect(Rescale)
+	end
+
+	-- header: logo top center -------------------------------------------------
+	local Header = New("Frame", {
+		LayoutOrder = 1,
+		Size = UDim2.new(1, 0, 0, 160),
+		BackgroundTransparency = 1,
+	}, Content)
+	New("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 0),
+		Size = UDim2.fromOffset(104, 104),
+		BackgroundTransparency = 1,
+		Image = Icons.Logo,
+		ScaleType = Enum.ScaleType.Fit,
+	}, Header)
+	Label(Header, {
+		Position = UDim2.fromOffset(0, 108),
+		Size = UDim2.new(1, 0, 0, 28),
+		Font = Enum.Font.GothamBold,
+		TextSize = 24,
+		Text = "Anime Adventures",
+	})
+	local Sub = Label(Header, {
+		Position = UDim2.fromOffset(0, 136),
+		Size = UDim2.new(1, 0, 0, 18),
+		TextSize = 13,
+		TextColor3 = Theme.Muted,
+		Text = "",
+	})
+
+	-- status pill --------------------------------------------------------------
+	local PillRow = New("Frame", {
+		LayoutOrder = 2,
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundTransparency = 1,
+	}, Content)
+	local Pill = New("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0),
+		Size = UDim2.fromOffset(430, 34),
+		BackgroundColor3 = Theme.Panel,
+		BorderSizePixel = 0,
+	}, PillRow)
+	Round(Pill, 17)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.3 }, Pill)
+	local Dot = New("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		Size = UDim2.fromOffset(10, 10),
+		BackgroundColor3 = Theme.Good,
+		BorderSizePixel = 0,
+	}, Pill)
+	Round(Dot, 5)
+	TweenService:Create(Dot, TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+		BackgroundTransparency = 0.75,
+	}):Play()
+	local PillText = Label(Pill, {
+		Position = UDim2.fromOffset(36, 0),
+		Size = UDim2.new(1, -50, 1, 0),
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = "",
+	})
+
+	-- stat cards ---------------------------------------------------------------
+	local Panel = New("Frame", {
+		LayoutOrder = 3,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Theme.Panel,
+		BackgroundTransparency = 0.1,
+		BorderSizePixel = 0,
+	}, Content)
+	Round(Panel, 16)
+	GradientStroke(Panel, 1.5)
+	New("UIPadding", {
+		PaddingTop = UDim.new(0, 14),
+		PaddingBottom = UDim.new(0, 14),
+		PaddingLeft = UDim.new(0, 14),
+		PaddingRight = UDim.new(0, 14),
+	}, Panel)
+	New("UIGridLayout", {
+		CellSize = UDim2.fromOffset(290, 56),
+		CellPadding = UDim2.fromOffset(12, 10),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, Panel)
+
+	local function AddCard(Order, Caption, IconId, Badge, Tint)
+		local Card = New("Frame", {
+			LayoutOrder = Order,
+			BackgroundColor3 = Theme.Card,
+			BorderSizePixel = 0,
+		}, Panel)
+		Round(Card, 12)
+		New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Card)
+
+		local IconBox = New("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 10, 0.5, 0),
+			Size = UDim2.fromOffset(40, 40),
+			BackgroundColor3 = Theme.Back,
+			BorderSizePixel = 0,
+		}, Card)
+		Round(IconBox, 10)
+		if IconId then
+			New("ImageLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromOffset(30, 30),
+				BackgroundTransparency = 1,
+				Image = IconId,
+				ScaleType = Enum.ScaleType.Fit,
+			}, IconBox)
+		else
+			Label(IconBox, {
+				Size = UDim2.fromScale(1, 1),
+				Font = Enum.Font.GothamBold,
+				TextSize = 14,
+				TextColor3 = Tint or Theme.Accent,
+				Text = Badge or "",
+			})
 		end
 
-		local Label = Instance.new("TextLabel")
-		Label.Size = UDim2.new(1, -30, 1, 0)
-		Label.Position = UDim2.fromOffset(30, 0)
-		Label.BackgroundTransparency = 1
-		Label.Font = Enum.Font.Gotham
-		Label.TextSize = 15
-		Label.TextColor3 = Color3.fromRGB(220, 220, 225)
-		Label.TextXAlignment = Enum.TextXAlignment.Left
-		Label.Text = ""
-		Label.Parent = Row
-
-		return Label
+		Label(Card, {
+			Position = UDim2.fromOffset(60, 8),
+			Size = UDim2.new(1, -68, 0, 14),
+			TextSize = 12,
+			TextColor3 = Theme.Muted,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = Caption,
+		})
+		return Label(Card, {
+			Position = UDim2.fromOffset(60, 24),
+			Size = UDim2.new(1, -68, 0, 26),
+			Font = Enum.Font.GothamBold,
+			TextSize = 18,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = "-",
+		})
 	end
 
-	local RowAccount = AddRow(44)
-	local RowUptime = AddRow(70)
-	local RowLevel = AddRow(96)
-	local RowGems = AddRow(122, { "gem", "gems", "gem_item" })
-	local RowTokens = AddRow(148, { "trait_reroll_token", "reroll_token", "trait_token", "reroll_stat_all", "token_trait_reroll" })
-	local RowRerolls = AddRow(174, { "trait_reroll_token", "reroll_token", "trait_token", "reroll_stat_all" })
-	local RowRemnants = AddRow(200, { "star_remnant", "star_remnant_limited" })
-	local RowUnits = AddRow(226, { "unit", "units" })
+	local ValueGems = AddCard(1, "Gems", Icons.Gems)
+	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
+	local ValueTokens = AddCard(3, "Reroll Tokens", Icons.Rerolls)
+	local ValueRerolls = AddCard(4, "Total Rerolls", Icons.Rerolls)
+	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
+	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
+	local ValueLevel = AddCard(7, "Level", nil, "LV", Theme.Accent)
+	local ValueUnits = AddCard(8, "Units owned", nil, "UN", Theme.Accent2)
 
-	local function MakeBar(Y, Caption, Color)
-		local Cap = Instance.new("TextLabel")
-		Cap.Size = UDim2.new(1, -20, 0, 16)
-		Cap.Position = UDim2.fromOffset(10, Y)
-		Cap.BackgroundTransparency = 1
-		Cap.Font = Enum.Font.Gotham
-		Cap.TextSize = 13
-		Cap.TextColor3 = Color3.fromRGB(180, 180, 190)
-		Cap.TextXAlignment = Enum.TextXAlignment.Left
-		Cap.Text = Caption
-		Cap.Parent = Panel
+	-- progress bars ------------------------------------------------------------
+	local Bars = New("Frame", {
+		LayoutOrder = 4,
+		Size = UDim2.new(1, 0, 0, 110),
+		BackgroundColor3 = Theme.Panel,
+		BackgroundTransparency = 0.1,
+		BorderSizePixel = 0,
+	}, Content)
+	Round(Bars, 16)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.35 }, Bars)
 
-		local Back = Instance.new("Frame")
-		Back.Size = UDim2.new(1, -20, 0, 14)
-		Back.Position = UDim2.fromOffset(10, Y + 18)
-		Back.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-		Back.BorderSizePixel = 0
-		Back.Parent = Panel
-
-		local Fill = Instance.new("Frame")
-		Fill.Size = UDim2.new(0, 0, 1, 0)
-		Fill.BackgroundColor3 = Color
-		Fill.BorderSizePixel = 0
-		Fill.Parent = Back
-
-		return Fill
+	local function AddBar(Y, Caption, ColorA, ColorB)
+		Label(Bars, {
+			Position = UDim2.fromOffset(18, Y),
+			Size = UDim2.new(0.5, -18, 0, 16),
+			TextSize = 13,
+			TextColor3 = Theme.Muted,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = Caption,
+		})
+		local Percent = Label(Bars, {
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -18, 0, Y),
+			Size = UDim2.new(0.5, -18, 0, 16),
+			Font = Enum.Font.GothamMedium,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			Text = "",
+		})
+		local Track = New("Frame", {
+			Position = UDim2.new(0, 18, 0, Y + 22),
+			Size = UDim2.new(1, -36, 0, 12),
+			BackgroundColor3 = Theme.Back,
+			BorderSizePixel = 0,
+		}, Bars)
+		Round(Track, 6)
+		local Fill = New("Frame", {
+			Size = UDim2.fromScale(0, 1),
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			BorderSizePixel = 0,
+		}, Track)
+		Round(Fill, 6)
+		New("UIGradient", { Color = ColorSequence.new(ColorA, ColorB) }, Fill)
+		return function(Fraction, Text)
+			Percent.Text = Text
+			TweenService:Create(Fill, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Size = UDim2.fromScale(math.clamp(Fraction, 0, 1), 1),
+			}):Play()
+		end
 	end
 
-	local LevelFill = MakeBar(258, "Level progress", Color3.fromRGB(90, 160, 255))
-	local GemFill = MakeBar(298, "Gems to hunt", Color3.fromRGB(120, 220, 140))
+	local SetLevelBar = AddBar(14, "Level progress", Theme.Accent, Theme.Accent2)
+	local SetGemBar = AddBar(62, "Gems to hunt", Color3.fromRGB(70, 200, 150), Theme.Good)
+
+	Label(Content, {
+		LayoutOrder = 5,
+		Size = UDim2.new(1, 0, 0, 16),
+		TextSize = 12,
+		TextColor3 = Theme.Muted,
+		Text = "RightControl toggles the UI  ·  Kaitun keeps running",
+	})
 
 	local StartedAt = tick()
 
@@ -1309,35 +1499,72 @@ local function StartStatsOverlay()
 
 	local function Refresh()
 		local Prof = Profile()
-		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or {}
-		local Owned = CountEntries(Collection().owned_units)
+		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or nil
+		if type(Items) ~= "table" then
+			Items = {}
+		end
 		local Level = GetLevel()
 		local Gems = GetGems()
 		local Up = math.floor(tick() - StartedAt)
-		local UpText = ("%02d:%02d:%02d"):format(math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
-		RowAccount.Text = Player.Name
-		RowUptime.Text = ("Uptime: %s"):format(UpText)
-		RowLevel.Text = ("Level: %d"):format(Level)
-		RowGems.Text = ("Gems: %s"):format(Fmt(Gems))
-		RowTokens.Text = ("Reroll Tokens: %s"):format(Fmt(Prof.trait_reroll_tokens))
-		RowRerolls.Text = ("Total Rerolls: %s"):format(Fmt(Prof.total_trait_rerolls))
-		RowRemnants.Text = ("Remnants: %s  (Ltd: %s)"):format(Fmt(Items.star_remnant), Fmt(Items.star_remnant_limited))
-		RowUnits.Text = ("Units owned: %d"):format(Owned)
-		LevelFill.Size = UDim2.new(math.clamp(Level / math.max(Config.EndgameLevel, 1), 0, 1), 0, 1, 0)
-		GemFill.Size = UDim2.new(math.clamp(Gems / math.max(Config.HuntGems, 1), 0, 1), 0, 1, 0)
+
+		-- header + pill
+		Sub.Text = ("%s   ·   %02d:%02d:%02d"):format(Player.Name, math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
+		local Parts = { Config.Enabled and "RUNNING" or "PAUSED", Loader.IsLobby and "Lobby" or "Match" }
+		local WaveValue = workspace:FindFirstChild("_wave_num")
+		if not Loader.IsLobby and WaveValue and WaveValue:IsA("ValueBase") then
+			Parts[#Parts + 1] = "Wave " .. tostring(WaveValue.Value)
+		end
+		local Current = State.Current
+		if Current and Current.Kind then
+			Parts[#Parts + 1] = ActivityNames[Current.Kind] or tostring(Current.Kind)
+		end
+		PillText.Text = table.concat(Parts, "   ·   ")
+		Dot.BackgroundColor3 = Config.Enabled and Theme.Good or Theme.Warn
+
+		-- cards
+		local CompassCount = tonumber(Items[Config.CompassId])
+		local Pick = tostring(Config.CompassPick or "")
+		Pick = Pick:sub(1, 1):upper() .. Pick:sub(2)
+		if State.CompassDone then
+			ValueCompass.Text = "Used  →  " .. Pick
+			ValueCompass.TextColor3 = Theme.Good
+		elseif CompassCount and CompassCount > 0 then
+			ValueCompass.Text = ("x%d ready"):format(CompassCount)
+			ValueCompass.TextColor3 = Theme.Warn
+		else
+			ValueCompass.Text = "Not used"
+			ValueCompass.TextColor3 = Theme.Text
+		end
+		ValueGems.Text = Fmt(Gems)
+		ValueTokens.Text = Fmt(Prof.trait_reroll_tokens)
+		ValueRerolls.Text = Fmt(Prof.total_trait_rerolls)
+		ValueRemnants.Text = Fmt(Items.star_remnant)
+		ValueLimited.Text = Fmt(Items.star_remnant_limited)
+		ValueLevel.Text = tostring(Level)
+		ValueUnits.Text = Fmt(CountEntries(Collection().owned_units))
+
+		-- bars
+		local Endgame = math.max(Config.EndgameLevel, 1)
+		SetLevelBar(Level / Endgame, ("Lv %d / %d   ·   %d%%"):format(Level, Endgame, math.floor(math.clamp(Level / Endgame, 0, 1) * 100)))
+		local Hunt = math.max(Config.HuntGems, 1)
+		SetGemBar(Gems / Hunt, ("%s / %s   ·   %d%%"):format(Fmt(Gems), Fmt(Hunt), math.floor(math.clamp(Gems / Hunt, 0, 1) * 100)))
 	end
 
 	pcall(function()
 		game:GetService("RunService"):Set3dRenderingEnabled(false)
 	end)
 
+	TweenService:Create(Content, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		GroupTransparency = 0,
+	}):Play()
+
 	task.spawn(function()
 		while Alive() do
 			pcall(Refresh)
-			task.wait(2)
+			task.wait(1)
 		end
 	end)
-	Refresh()
+	pcall(Refresh)
 	Log("stats overlay on")
 end
 
