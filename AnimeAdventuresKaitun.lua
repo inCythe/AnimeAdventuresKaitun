@@ -4525,7 +4525,8 @@ local function Main()
 	LoadState()
 	-- getgenv().Kaitun may be gone after a teleport re-run; fall back to the
 	-- last resolved unit saved in the state file, then persist the result
-	if UserConfig.CompassUnit == nil and type(State.CompassUnit) == "string" and State.CompassUnit ~= "" then
+	local UserUnit = type(UserConfig) == "table" and UserConfig.CompassUnit or nil
+	if UserUnit == nil and type(State.CompassUnit) == "string" and State.CompassUnit ~= "" then
 		Config.CompassUnit = NormalizeUnitId(State.CompassUnit) or State.CompassUnit
 	end
 	State.CompassUnit = Config.CompassUnit
