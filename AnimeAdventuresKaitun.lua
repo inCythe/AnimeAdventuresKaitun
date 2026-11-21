@@ -189,6 +189,7 @@ local Config = {
 	-- challenges reset on a fixed clock: every :00 and :30
 	ChallengeResetSeconds = 1800,
 	ChallengeResetGrace = 20,     -- wait this long after the reset before leaving for it
+	ChallengeLeaveLead = 20,      -- head to lobby this many seconds BEFORE a reset
 
 	-- challenges
 	TrustProfileForClear = false, -- true = also treat a challenge uuid found in the profile as cleared
@@ -1630,7 +1631,7 @@ end
 -- scope block: frees the lobby locals before the match section; only the
 -- entry points used later (RunLobby by Main, NeedHunt/CurrentSlot by the
 -- match planner) are exported through the forward declarations
-local RunLobby, NeedHunt, CurrentSlot
+local RunLobby, NeedHunt, CurrentSlot, NextResetInfo
 do
 
 -- group + favorite -------------------------------------------------------
@@ -3020,6 +3021,19 @@ CurrentSlot = function()
 	return math.floor((Now - Config.ChallengeResetGrace) / Config.ChallengeResetSeconds)
 end
 
+-- seconds until the next :00/:30 challenge reset, plus the reset timestamp
+NextResetInfo = function()
+	local Now = os.time()
+	local Ok, ServerNow = pcall(function()
+		return workspace:GetServerTimeNow()
+	end)
+	if Ok and tonumber(ServerNow) then
+		Now = ServerNow
+	end
+	local Next = (math.floor(Now / Config.ChallengeResetSeconds) + 1) * Config.ChallengeResetSeconds
+	return Next - Now, Next
+end
+
 local function JoinChallenge(Def, Uuid)
 	if MatchmakingMap() == Def.MapLabel then
 		return true
@@ -4294,6 +4308,8 @@ RunInGame = function()
 	local LoseVoted = false
 	local Handled = false
 	local LastHuntCheck = 0
+	local LastResetCheck = 0
+	local ResetLeaveAt = nil
 
 	-- placement / upgrades on their own thread
 	task.spawn(function()
@@ -4339,6 +4355,20 @@ RunInGame = function()
 				LastHuntCheck = os.clock()
 				if NeedHunt() then
 					Log("hunt due -> back to lobby")
+					pcall(FireEndpoint, "teleport_back_to_lobby")
+				end
+			end
+
+			-- a challenge reset is coming: leave early so the lobby queue is
+			-- already open when the new challenges land (once per reset)
+			if os.clock() - LastResetCheck > 5 then
+				LastResetCheck = os.clock()
+				local Left, Boundary = NextResetInfo()
+				if GetLevel() >= Config.NormalChallengeLevel
+					and Boundary ~= ResetLeaveAt
+					and Left <= Config.ChallengeLeaveLead then
+					ResetLeaveAt = Boundary
+					Log("challenge reset in %ds -> leaving to lobby", math.floor(Left))
 					pcall(FireEndpoint, "teleport_back_to_lobby")
 				end
 			end
