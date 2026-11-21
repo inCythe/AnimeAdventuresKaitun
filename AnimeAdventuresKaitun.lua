@@ -999,7 +999,7 @@ local RequestFn = (syn and syn.request) or http_request or request or (http and 
 -- profile's likely currency containers for numeric values whose key looks
 -- like a currency (gem, remnant, reroll, shard, ticket, ...)
 local ResourceWords = { "gem", "remnant", "reroll", "shard", "ticket", "token", "coin", "essence", "fragment", "dust", "core", "scroll", "charm", "relic", "currency", "money", "point", "badge", "key", "stone" }
-local function ResourceFields()
+local function ResourceFields(Skip)
 	local Found, Seen = {}, {}
 	local function Add(Key, Value)
 		if type(Value) ~= "number" or Value ~= Value then
@@ -1007,6 +1007,9 @@ local function ResourceFields()
 		end
 		local Name = tostring(Key)
 		local Lower = Name:lower()
+		if Skip and Skip[Lower] then
+			return
+		end
 		for _, Word in ipairs(ResourceWords) do
 			if Lower:find(Word, 1, true) then
 				if not Seen[Lower] then
@@ -1055,11 +1058,29 @@ local function SendWebhook(Title, Description, Color)
 	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
 	end
+	-- explicit currency fields; the nested inventory items are added by hand
+	-- because ResourceFields only scans one level deep
+	local Prof = Profile()
+	local NormalItems = type(Prof.inventory) == "table"
+		and type(Prof.inventory.normal_items) == "table"
+		and Prof.inventory.normal_items or {}
+	local function ItemCount(Key)
+		return tonumber(NormalItems[Key]) or 0
+	end
 	local Fields = {
 		{ name = "Account", value = Config.WebhookShowName and Player.Name or "hidden", inline = true },
 		{ name = "Level", value = tostring(GetLevel()), inline = true },
+		{ name = "Gems", value = tostring(GetGems()), inline = true },
+		{ name = "Reroll Tokens", value = tostring(tonumber(Prof.trait_reroll_tokens) or 0), inline = true },
+		{ name = "Total Rerolls", value = tostring(tonumber(Prof.total_trait_rerolls) or 0), inline = true },
+		{ name = "Remnants", value = tostring(ItemCount("star_remnant")), inline = true },
+		{ name = "Remnants (Ltd)", value = tostring(ItemCount("star_remnant_limited")), inline = true },
 	}
-	for _, Field in ipairs(ResourceFields()) do
+	for _, Field in ipairs(ResourceFields({
+		gem_amount = true,
+		trait_reroll_tokens = true,
+		total_trait_rerolls = true,
+	})) do
 		Fields[#Fields + 1] = Field
 	end
 	local Body = {
