@@ -156,6 +156,7 @@ local Config = {
 	-- compass (CompassUnit = the pick AND the hunt target)
 	CompassId = "celestial_compass_u21",
 	CompassUnit = "elyssia",
+	Challenges = true,            -- join daily/normal challenges and leave matches for resets
 	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
 
 	-- group + favorite
@@ -299,6 +300,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.SkipCutscenes ~= nil then
 		Config.SkipCutscenes = UserConfig.SkipCutscenes and true or false
+	end
+	if UserConfig.Challenges ~= nil then
+		Config.Challenges = UserConfig.Challenges and true or false
 	end
 	if UserConfig.ChallengesOnlyAfterCompass ~= nil then
 		Config.ChallengesOnlyAfterCompass = UserConfig.ChallengesOnlyAfterCompass and true or false
@@ -3153,15 +3157,17 @@ local function Plan()
 		end
 	end
 
-	local Slot = CurrentSlot()
-	local Def, Uuid, Reachable = PickChallenge(Level)
-	if Reachable then
-		State.ChallengeSlot = Slot
-		SaveState()
-	end
-	if Def then
-		Log("%s available (%s)", Def.Label, tostring(Uuid))
-		return JoinChallenge(Def, Uuid)
+	if Config.Challenges then
+		local Slot = CurrentSlot()
+		local Def, Uuid, Reachable = PickChallenge(Level)
+		if Reachable then
+			State.ChallengeSlot = Slot
+			SaveState()
+		end
+		if Def then
+			Log("%s available (%s)", Def.Label, tostring(Uuid))
+			return JoinChallenge(Def, Uuid)
+		end
 	end
 
 	if Level < Config.EndgameLevel then
@@ -4336,7 +4342,7 @@ local function DecideAfterMatch(Ctx)
 
 	-- challenges reset at :00 and :30 — if a reset passed since the lobby last
 	-- handled them, go back and check (get_*_challenge only works in the lobby)
-	if Level >= Config.NormalChallengeLevel and CurrentSlot() > (State.ChallengeSlot or 0) then
+	if Config.Challenges and Level >= Config.NormalChallengeLevel and CurrentSlot() > (State.ChallengeSlot or 0) then
 		Log("challenge reset passed -> leaving to check them")
 		return "Leave"
 	end
@@ -4489,7 +4495,7 @@ RunInGame = function()
 
 			-- a challenge reset is coming: leave early so the lobby queue is
 			-- already open when the new challenges land (once per reset)
-			if os.clock() - LastResetCheck > 5 then
+			if Config.Challenges and os.clock() - LastResetCheck > 5 then
 				LastResetCheck = os.clock()
 				local Left, Boundary = NextResetInfo()
 				if GetLevel() >= Config.NormalChallengeLevel
