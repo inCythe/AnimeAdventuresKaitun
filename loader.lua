@@ -1,10 +1,8 @@
 -- Anime Adventures — Kaitun loader
--- Paste this into your executor (autoexec folder recommended). It only runs
--- inside the Anime Adventures universe and downloads the latest Kaitun script
--- from GitHub. It also re-queues itself via queue_on_teleport so the script
+-- Paste this into your executor (autoexec folder recommended). It downloads
+-- the latest Kaitun script from GitHub. It also re-queues itself via queue_on_teleport so the script
 -- survives lobby -> match -> lobby teleports even without autoexec.
 
-local UNIVERSE_ID = 3183403065 -- Anime Adventures
 local LOADER_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"
 local SCRIPT_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
 
@@ -12,10 +10,6 @@ if not game:IsLoaded() then
 	repeat
 		task.wait()
 	until game:IsLoaded()
-end
-
-if game.GameId ~= UNIVERSE_ID then
-	return
 end
 
 -- queue the loader itself for the next server
