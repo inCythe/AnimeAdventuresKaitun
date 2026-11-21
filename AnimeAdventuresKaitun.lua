@@ -995,71 +995,11 @@ end
 -- webhook reports ----------------------------------------------------------
 local RequestFn = (syn and syn.request) or http_request or request or (http and http.request)
 
--- currency/resource fields for the embed: scans Player._stats and the
--- profile's likely currency containers for numeric values whose key looks
--- like a currency (gem, remnant, reroll, shard, ticket, ...)
-local ResourceWords = { "gem", "remnant", "reroll", "shard", "ticket", "token", "coin", "essence", "fragment", "dust", "core", "scroll", "charm", "relic", "currency", "money", "point", "badge", "key", "stone" }
-local function ResourceFields(Skip)
-	local Found, Seen = {}, {}
-	local function Add(Key, Value)
-		if type(Value) ~= "number" or Value ~= Value then
-			return
-		end
-		local Name = tostring(Key)
-		local Lower = Name:lower()
-		if Skip and Skip[Lower] then
-			return
-		end
-		for _, Word in ipairs(ResourceWords) do
-			if Lower:find(Word, 1, true) then
-				if not Seen[Lower] then
-					Seen[Lower] = true
-					Found[#Found + 1] = { name = Name, value = tostring(math.floor(Value)), inline = true }
-				end
-				return
-			end
-		end
-	end
-	local Stats = Player:FindFirstChild("_stats")
-	if Stats then
-		for _, Child in ipairs(Stats:GetChildren()) do
-			if Child:IsA("ValueBase") then
-				Add(Child.Name, tonumber(Child.Value))
-			end
-		end
-	end
-	local Prof = Profile()
-	for Key, Value in pairs(Prof) do
-		Add(Key, Value)
-	end
-	for _, Section in ipairs({ "currencies", "currency", "items", "materials", "wallet", "resources", "inventory" }) do
-		local Table = Prof[Section]
-		if type(Table) == "table" then
-			for Key, Value in pairs(Table) do
-				if type(Value) == "number" then
-					Add(Key, Value)
-				elseif type(Value) == "table" then
-					Add(Key, tonumber(Value.amount or Value.count or Value.value))
-				end
-			end
-		end
-	end
-	table.sort(Found, function(A, B)
-		return A.name < B.name
-	end)
-	local Out = {}
-	for Index = 1, math.min(#Found, 15) do
-		Out[Index] = Found[Index]
-	end
-	return Out
-end
-
 local function SendWebhook(Title, Description, Color)
 	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
 	end
-	-- explicit currency fields; the nested inventory items are added by hand
-	-- because ResourceFields only scans one level deep
+	-- exact profile paths (verified with check_inventory.lua)
 	local Prof = Profile()
 	local NormalItems = type(Prof.inventory) == "table"
 		and type(Prof.inventory.normal_items) == "table"
@@ -1070,19 +1010,12 @@ local function SendWebhook(Title, Description, Color)
 	local Fields = {
 		{ name = "Account", value = Config.WebhookShowName and Player.Name or "hidden", inline = true },
 		{ name = "Level", value = tostring(GetLevel()), inline = true },
-		{ name = "Gems", value = tostring(GetGems()), inline = true },
+		{ name = "Gems", value = tostring(tonumber(Prof.gem_amount) or GetGems()), inline = true },
 		{ name = "Reroll Tokens", value = tostring(tonumber(Prof.trait_reroll_tokens) or 0), inline = true },
 		{ name = "Total Rerolls", value = tostring(tonumber(Prof.total_trait_rerolls) or 0), inline = true },
 		{ name = "Remnants", value = tostring(ItemCount("star_remnant")), inline = true },
 		{ name = "Remnants (Ltd)", value = tostring(ItemCount("star_remnant_limited")), inline = true },
 	}
-	for _, Field in ipairs(ResourceFields({
-		gem_amount = true,
-		trait_reroll_tokens = true,
-		total_trait_rerolls = true,
-	})) do
-		Fields[#Fields + 1] = Field
-	end
 	local Body = {
 		username = Config.WebhookName,
 		embeds = { {
