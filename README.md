@@ -29,6 +29,8 @@ getgenv().Kaitun = {
 	WebhookPing = "",          -- e.g. "<@123456789>" pinged on each webhook
 	AutoSell = true,           -- sell units not on the team (see below)
 	SkipCutscenes = true,      -- skip summon/reward/hatch cinematics (default true)
+	Challenges = false,        -- true = join daily/normal challenges and leave
+	                           -- matches for the :00/:30 resets (default false)
 	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned,
 	                                 -- stop joining story/infinite; lobby only
 	                                 -- takes challenges/dailies
@@ -52,6 +54,12 @@ After every hunt 10x roll, and again after the team is equipped
 
 Set `AutoSell = false` to disable.
 
+## Challenges
+
+Daily/Normal challenge joins are **off by default**. Set `Challenges = true`
+to enable them — the lobby will queue challenges when they reset on the
+:00/:30 clock, and matches will end a bit early to be in the lobby in time.
+
 ## Challenges-only mode
 
 Set `ChallengesOnlyAfterCompass = true` to stop the infinite grind once the
@@ -61,7 +69,7 @@ alone does not trigger it:
 - infinite tower is never joined again (story still runs until `TargetLevel`,
   and act 6 is still attempted once)
 - the script stays in the lobby and only takes Daily/Normal challenge joins,
-  including ones that reset on the :00/:30 clock
+  including ones that reset on the :00/:30 clock (requires `Challenges = true`)
 - hunt and the one-time lobby claims (codes, dailies, summons, team equip)
   still run normally before the compass unit is obtained
 
