@@ -218,11 +218,11 @@ local Config = {
 	RadiusHill = 40,
 	RadiusFarm = 10,
 	FarmTerrain = "ground",
-	ActionDelay = 0.2,
-	RetryEvery = 3,               -- seconds before a unit retries after a failed placement
+	ActionDelay = 0.1,
+	RetryEvery = 1,               -- seconds before a unit retries after a failed placement
 	SummonHatchWait = 2,          -- max seconds to wait for the hatch record after a 10x
 	RescanAfterFails = 6,         -- this many failed placements in a row -> rescan
-	UpgradeRetry = 2,
+	UpgradeRetry = 1,
 	VoteRetry = 2,
 	ShowVisuals = false,          -- draw scan nodes/rings/arrow like auto_place.lua
 
@@ -4133,16 +4133,14 @@ function Placer.PlaceOnce(Uuid, UnitId)
 	local Before = #PlayerUnitModels()
 	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
 	if not (Ok and Result) then
-		-- a node only becomes permanently bad after failing twice
-		Node.Fails = (Node.Fails or 0) + 1
-		if Node.Fails >= 2 then
-			Node.Bad = true
-			Placer.Retire(Node)
-		end
+		-- a rejected spawn retires the node immediately: the next attempt
+		-- must land somewhere else, not hammer the same spot
+		Node.Bad = true
+		Placer.Retire(Node)
 		return false, "server"
 	end
 	-- the server accepted it; give the model a moment to replicate
-	local Deadline = os.clock() + 2
+	local Deadline = os.clock() + 1
 	repeat
 		task.wait(0.1)
 	until #PlayerUnitModels() > Before or os.clock() >= Deadline
@@ -4455,7 +4453,7 @@ RunInGame = function()
 					warn("[AA Kaitun] placement error: " .. tostring(Err))
 				end
 			end
-			task.wait(1)
+			task.wait(0.5)
 		end
 	end)
 
