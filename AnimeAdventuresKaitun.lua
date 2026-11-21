@@ -41,12 +41,8 @@ if not game:IsLoaded() then
 	until game:IsLoaded()
 end
 
--- wait until the local player exists, then continue
 local Players = game:GetService("Players")
 local Player = Players.LocalPlayer
-if not Player then
-	Player = Players.PlayerAdded:Wait()
-end
 
 -- services ---------------------------------------------------------------
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
