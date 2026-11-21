@@ -988,9 +988,78 @@ end
 -- webhook reports ----------------------------------------------------------
 local RequestFn = (syn and syn.request) or http_request or request or (http and http.request)
 
+-- display name for webhook text ("elyssia" -> "Elyssia")
+local function UnitDisplayName(Id)
+	local Def = type(Id) == "string" and Units[Id] or nil
+	return (type(Def) == "table" and type(Def.name) == "string" and Def.name) or tostring(Id)
+end
+
+-- currency/resource fields for the embed: scans Player._stats and the
+-- profile's likely currency containers for numeric values whose key looks
+-- like a currency (gem, remnant, reroll, shard, ticket, ...)
+local ResourceWords = { "gem", "remnant", "reroll", "shard", "ticket", "token", "coin", "essence", "fragment", "dust", "core", "scroll", "charm", "relic", "currency", "money", "point", "badge", "key", "stone" }
+local function ResourceFields()
+	local Found, Seen = {}, {}
+	local function Add(Key, Value)
+		if type(Value) ~= "number" or Value ~= Value then
+			return
+		end
+		local Name = tostring(Key)
+		local Lower = Name:lower()
+		for _, Word in ipairs(ResourceWords) do
+			if Lower:find(Word, 1, true) then
+				if not Seen[Lower] then
+					Seen[Lower] = true
+					Found[#Found + 1] = { name = Name, value = tostring(math.floor(Value)), inline = true }
+				end
+				return
+			end
+		end
+	end
+	local Stats = Player:FindFirstChild("_stats")
+	if Stats then
+		for _, Child in ipairs(Stats:GetChildren()) do
+			if Child:IsA("ValueBase") then
+				Add(Child.Name, tonumber(Child.Value))
+			end
+		end
+	end
+	local Prof = Profile()
+	for Key, Value in pairs(Prof) do
+		Add(Key, Value)
+	end
+	for _, Section in ipairs({ "currencies", "currency", "items", "materials", "wallet", "resources", "inventory" }) do
+		local Table = Prof[Section]
+		if type(Table) == "table" then
+			for Key, Value in pairs(Table) do
+				if type(Value) == "number" then
+					Add(Key, Value)
+				elseif type(Value) == "table" then
+					Add(Key, tonumber(Value.amount or Value.count or Value.value))
+				end
+			end
+		end
+	end
+	table.sort(Found, function(A, B)
+		return A.name < B.name
+	end)
+	local Out = {}
+	for Index = 1, math.min(#Found, 15) do
+		Out[Index] = Found[Index]
+	end
+	return Out
+end
+
 local function SendWebhook(Title, Description, Color)
 	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
+	end
+	local Fields = {
+		{ name = "Account", value = Config.WebhookShowName and Player.Name or "hidden", inline = true },
+		{ name = "Level", value = tostring(GetLevel()), inline = true },
+	}
+	for _, Field in ipairs(ResourceFields()) do
+		Fields[#Fields + 1] = Field
 	end
 	local Body = {
 		username = Config.WebhookName,
@@ -998,11 +1067,7 @@ local function SendWebhook(Title, Description, Color)
 			title = Title,
 			description = Description,
 			color = Color or 5793266,
-			fields = {
-				{ name = "Account", value = Config.WebhookShowName and Player.Name or "hidden", inline = true },
-				{ name = "Level", value = tostring(GetLevel()), inline = true },
-				{ name = "Gems", value = tostring(GetGems()), inline = true },
-			},
+			fields = Fields,
 			timestamp = DateTime.now():ToIsoDate(),
 		} },
 	}
@@ -1057,7 +1122,7 @@ local Milestones = {
 	{
 		Key = "CompassUsed",
 		Title = "Celestial Compass used",
-		Text = "Picked " .. Config.CompassPick .. ".",
+		Text = "Picked " .. UnitDisplayName(Config.CompassPick) .. ".",
 		Check = function()
 			return State.CompassDone == true
 		end,
@@ -1961,7 +2026,7 @@ local function HuntUnit()
 			SaveState()
 			Log("got %s after %d x10 rolls", Target, Rolls)
 			if Config.WebhookMode == "all" then
-				SendWebhook("Hunted " .. Target, "Got " .. Target .. " after " .. Rolls .. " x10 rolls.", 5763719)
+				SendWebhook("Hunted " .. UnitDisplayName(Target), "Got **" .. UnitDisplayName(Target) .. "** after " .. Rolls .. " x10 rolls.", 5763719)
 			end
 			return true
 		end
