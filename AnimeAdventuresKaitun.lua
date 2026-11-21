@@ -3898,6 +3898,9 @@ RunInGame = function()
 	Log("match mode (%s)", CurrentContext().Kind)
 	ClearScanVisuals()
 	ApplyMatchSettings()
+	if Config.StatsOverlay then
+		StartStatsOverlay()
+	end
 
 	Placer.Core = Loader.load_core_service(nil, "PlacementCore")
 	Placer.Paths = Loader.load_core_service(nil, "PathService")
@@ -3988,9 +3991,6 @@ local function Main()
 		return
 	end
 	AntiAfk()
-	if Config.StatsOverlay then
-		StartStatsOverlay()
-	end
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
 	end
