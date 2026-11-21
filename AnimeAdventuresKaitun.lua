@@ -241,6 +241,8 @@ local Config = {
 	SkipCutscenes = true,        -- stub summon/reward/hatch cinematics
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
+
+	StatsOverlay = true,         -- black screen + live account stats panel
 }
 
 -- user config via getgenv().Kaitun -----------------------------------------
@@ -304,6 +306,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.ChallengesOnlyAfterCompass ~= nil then
 		Config.ChallengesOnlyAfterCompass = UserConfig.ChallengesOnlyAfterCompass and true or false
+	end
+	if UserConfig.StatsOverlay ~= nil then
+		Config.StatsOverlay = UserConfig.StatsOverlay and true or false
 	end
 end
 
@@ -1117,6 +1122,143 @@ local function StartMilestoneWatcher()
 			task.wait(10)
 		end
 	end)
+end
+
+-- stats overlay -------------------------------------------------------------
+-- black screen + live account panel; 3D rendering is disabled for fps
+local function StartStatsOverlay()
+	local Parent = nil
+	pcall(function()
+		if GetHui then
+			Parent = GetHui()
+		end
+	end)
+	if not Parent then
+		Parent = PlayerGui
+	end
+	local Old = Parent:FindFirstChild("AAKaitunStats")
+	if Old then
+		Old:Destroy()
+	end
+
+	local Gui = Instance.new("ScreenGui")
+	Gui.Name = "AAKaitunStats"
+	Gui.ResetOnSpawn = false
+	Gui.IgnoreGuiInset = true
+	Gui.DisplayOrder = 9999
+	Gui.Parent = Parent
+
+	local Black = Instance.new("Frame")
+	Black.Name = "Black"
+	Black.Size = UDim2.fromScale(1, 1)
+	Black.BackgroundColor3 = Color3.new(0, 0, 0)
+	Black.BorderSizePixel = 0
+	Black.Active = false
+	Black.Parent = Gui
+
+	local Panel = Instance.new("Frame")
+	Panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	Panel.Position = UDim2.fromScale(0.5, 0.5)
+	Panel.Size = UDim2.fromOffset(480, 320)
+	Panel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+	Panel.BorderSizePixel = 0
+	Panel.Parent = Black
+
+	local PanelCorner = Instance.new("UICorner")
+	PanelCorner.CornerRadius = UDim.new(0, 10)
+	PanelCorner.Parent = Panel
+
+	local Title = Instance.new("TextLabel")
+	Title.Size = UDim2.new(1, -20, 0, 28)
+	Title.Position = UDim2.fromOffset(10, 8)
+	Title.BackgroundTransparency = 1
+	Title.Font = Enum.Font.GothamBold
+	Title.TextSize = 18
+	Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Title.TextXAlignment = Enum.TextXAlignment.Left
+	Title.Text = "AA Kaitun"
+	Title.Parent = Panel
+
+	local Stats = Instance.new("TextLabel")
+	Stats.Size = UDim2.new(1, -20, 0, 170)
+	Stats.Position = UDim2.fromOffset(10, 42)
+	Stats.BackgroundTransparency = 1
+	Stats.Font = Enum.Font.Gotham
+	Stats.TextSize = 15
+	Stats.TextColor3 = Color3.fromRGB(220, 220, 225)
+	Stats.TextXAlignment = Enum.TextXAlignment.Left
+	Stats.TextYAlignment = Enum.TextYAlignment.Top
+	Stats.Text = ""
+	Stats.Parent = Panel
+
+	local function MakeBar(Y, Caption, Color)
+		local Cap = Instance.new("TextLabel")
+		Cap.Size = UDim2.new(1, -20, 0, 16)
+		Cap.Position = UDim2.fromOffset(10, Y)
+		Cap.BackgroundTransparency = 1
+		Cap.Font = Enum.Font.Gotham
+		Cap.TextSize = 13
+		Cap.TextColor3 = Color3.fromRGB(180, 180, 190)
+		Cap.TextXAlignment = Enum.TextXAlignment.Left
+		Cap.Text = Caption
+		Cap.Parent = Panel
+
+		local Back = Instance.new("Frame")
+		Back.Size = UDim2.new(1, -20, 0, 14)
+		Back.Position = UDim2.fromOffset(10, Y + 18)
+		Back.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+		Back.BorderSizePixel = 0
+		Back.Parent = Panel
+
+		local Fill = Instance.new("Frame")
+		Fill.Size = UDim2.new(0, 0, 1, 0)
+		Fill.BackgroundColor3 = Color
+		Fill.BorderSizePixel = 0
+		Fill.Parent = Back
+
+		return Fill
+	end
+
+	local LevelFill = MakeBar(218, "Level progress", Color3.fromRGB(90, 160, 255))
+	local GemFill = MakeBar(258, "Gems to hunt", Color3.fromRGB(120, 220, 140))
+
+	local function Fmt(Value)
+		local Str = tostring(math.floor(tonumber(Value) or 0))
+		local Out = Str:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+		return (Out:gsub("^,", ""))
+	end
+
+	local function Refresh()
+		local Prof = Profile()
+		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or {}
+		local Owned = CountEntries(Collection().owned_units)
+		local Level = GetLevel()
+		local Gems = GetGems()
+		Stats.Text = table.concat({
+			Player.Name,
+			("Level: %d"):format(Level),
+			("Gems: %s"):format(Fmt(Gems)),
+			("Reroll Tokens: %s"):format(Fmt(Prof.trait_reroll_tokens)),
+			("Total Rerolls: %s"):format(Fmt(Prof.total_trait_rerolls)),
+			("Remnants: %s  (Ltd: %s)"):format(Fmt(Items.star_remnant), Fmt(Items.star_remnant_limited)),
+			("Units owned: %d"):format(Owned),
+		}, "\n")
+		LevelFill.Size = UDim2.new(math.clamp(Level / math.max(Config.EndgameLevel, 1), 0, 1), 0, 1, 0)
+		GemFill.Size = UDim2.new(math.clamp(Gems / math.max(Config.HuntGems, 1), 0, 1), 0, 1, 0)
+	end
+
+	pcall(function()
+		game:GetService("RunService"):Set3dRenderingEnabled(false)
+	end)
+
+	task.spawn(function()
+		while Alive() do
+			pcall(Refresh)
+			task.wait(2)
+		end
+	end)
+	Refresh()
+	Log("stats overlay on")
 end
 
 -- ============================================================ LOBBY =====
@@ -3846,6 +3988,9 @@ local function Main()
 		return
 	end
 	AntiAfk()
+	if Config.StatsOverlay then
+		StartStatsOverlay()
+	end
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
 	end
