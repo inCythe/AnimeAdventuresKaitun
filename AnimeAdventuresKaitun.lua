@@ -1127,15 +1127,8 @@ end
 -- stats overlay -------------------------------------------------------------
 -- black screen + live account panel; 3D rendering is disabled for fps
 local function StartStatsOverlay()
-	local Parent = nil
-	pcall(function()
-		if GetHui then
-			Parent = GetHui()
-		end
-	end)
-	if not Parent then
-		Parent = PlayerGui
-	end
+	-- PlayerGui keeps the panel under the CoreGui (topbar, chat, menus)
+	local Parent = PlayerGui
 	local Old = Parent:FindFirstChild("AAKaitunStats")
 	if Old then
 		Old:Destroy()
@@ -1145,7 +1138,7 @@ local function StartStatsOverlay()
 	Gui.Name = "AAKaitunStats"
 	Gui.ResetOnSpawn = false
 	Gui.IgnoreGuiInset = true
-	Gui.DisplayOrder = 9999
+	Gui.DisplayOrder = 50
 	Gui.Parent = Parent
 
 	local Black = Instance.new("Frame")
@@ -1222,6 +1215,8 @@ local function StartStatsOverlay()
 	local LevelFill = MakeBar(218, "Level progress", Color3.fromRGB(90, 160, 255))
 	local GemFill = MakeBar(258, "Gems to hunt", Color3.fromRGB(120, 220, 140))
 
+	local StartedAt = os.clock()
+
 	local function Fmt(Value)
 		local Str = tostring(math.floor(tonumber(Value) or 0))
 		local Out = Str:reverse():gsub("(%d%d%d)", "%1,"):reverse()
@@ -1234,8 +1229,11 @@ local function StartStatsOverlay()
 		local Owned = CountEntries(Collection().owned_units)
 		local Level = GetLevel()
 		local Gems = GetGems()
+		local Up = math.floor(os.clock() - StartedAt)
+		local UpText = ("%02d:%02d:%02d"):format(math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
 		Stats.Text = table.concat({
 			Player.Name,
+			("Uptime: %s"):format(UpText),
 			("Level: %d"):format(Level),
 			("Gems: %s"):format(Fmt(Gems)),
 			("Reroll Tokens: %s"):format(Fmt(Prof.trait_reroll_tokens)),
