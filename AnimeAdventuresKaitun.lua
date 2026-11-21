@@ -194,7 +194,8 @@ local Config = {
 	TrustProfileForClear = false, -- true = also treat a challenge uuid found in the profile as cleared
 	MatchmakingRetryWait = 21,
 	MatchmakingRetries = 5,
-	QueueTimeout = 300,            -- leave matchmaking after this long and re-queue
+	QueueTimeout = 300,           -- queued this long (5 min) -> leave, wait, queue again
+	JoinTimeout = 90,             -- a join that never opened a queue or teleported
 
 	-- webhook reports (leave the url empty to disable)
 	WebhookUrl = "",
@@ -1133,9 +1134,11 @@ local function StartStatsOverlay()
 	local Camera = workspace.CurrentCamera
 
 	local Holder = PlayerGui
-	local Old = Holder:FindFirstChild("AAKaitunStats")
-	if Old then
-		Old:Destroy()
+	for _, Name in ipairs({ "AAKaitunStats", "AAKaitunToggle" }) do
+		local Old = Holder:FindFirstChild(Name)
+		if Old then
+			Old:Destroy()
+		end
 	end
 
 	local Gui = Instance.new("ScreenGui")
@@ -1236,12 +1239,12 @@ local function StartStatsOverlay()
 	local Glow = New("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.new(0.5, 0, 0, -260),
-		Size = UDim2.fromOffset(760, 760),
+		Size = UDim2.fromOffset(820, 820),
 		BackgroundColor3 = Theme.Accent,
 		BackgroundTransparency = 0.88,
 		BorderSizePixel = 0,
 	}, Back)
-	Round(Glow, 380)
+	Round(Glow, 410)
 	New("UIGradient", {
 		Rotation = 90,
 		Transparency = NumberSequence.new({
@@ -1254,21 +1257,28 @@ local function StartStatsOverlay()
 	local Content = New("CanvasGroup", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(620, 0),
+		Size = UDim2.fromOffset(740, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		GroupTransparency = 1,
 	}, Back)
 	New("UIListLayout", {
-		Padding = UDim.new(0, 12),
+		Padding = UDim.new(0, 14),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	}, Content)
+	-- room for the outlines: a CanvasGroup clips anything outside its bounds
+	New("UIPadding", {
+		PaddingLeft = UDim.new(0, 24),
+		PaddingRight = UDim.new(0, 24),
+		PaddingTop = UDim.new(0, 12),
+		PaddingBottom = UDim.new(0, 12),
 	}, Content)
 
 	local Scale = New("UIScale", {}, Content)
 	local function Rescale()
 		local View = Camera and Camera.ViewportSize or Vector2.new(1280, 720)
-		Scale.Scale = math.clamp(math.min(View.X / 700, View.Y / 700), 0.45, 1.3)
+		Scale.Scale = math.clamp(math.min(View.X / 780, View.Y / 680), 0.45, 1.4)
 	end
 	Rescale()
 	if Camera then
@@ -1278,28 +1288,21 @@ local function StartStatsOverlay()
 	-- header: logo top center -------------------------------------------------
 	local Header = New("Frame", {
 		LayoutOrder = 1,
-		Size = UDim2.new(1, 0, 0, 160),
+		Size = UDim2.new(1, 0, 0, 156),
 		BackgroundTransparency = 1,
 	}, Content)
 	New("ImageLabel", {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.new(0.5, 0, 0, 0),
-		Size = UDim2.fromOffset(104, 104),
+		Size = UDim2.fromOffset(124, 124),
 		BackgroundTransparency = 1,
 		Image = Icons.Logo,
 		ScaleType = Enum.ScaleType.Fit,
 	}, Header)
-	Label(Header, {
-		Position = UDim2.fromOffset(0, 108),
-		Size = UDim2.new(1, 0, 0, 28),
-		Font = Enum.Font.GothamBold,
-		TextSize = 24,
-		Text = "Anime Adventures",
-	})
 	local Sub = Label(Header, {
-		Position = UDim2.fromOffset(0, 136),
-		Size = UDim2.new(1, 0, 0, 18),
-		TextSize = 13,
+		Position = UDim2.fromOffset(0, 130),
+		Size = UDim2.new(1, 0, 0, 20),
+		TextSize = 14,
 		TextColor3 = Theme.Muted,
 		Text = "",
 	})
@@ -1307,17 +1310,17 @@ local function StartStatsOverlay()
 	-- status pill --------------------------------------------------------------
 	local PillRow = New("Frame", {
 		LayoutOrder = 2,
-		Size = UDim2.new(1, 0, 0, 34),
+		Size = UDim2.new(1, 0, 0, 38),
 		BackgroundTransparency = 1,
 	}, Content)
 	local Pill = New("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0),
 		Position = UDim2.fromScale(0.5, 0),
-		Size = UDim2.fromOffset(430, 34),
+		Size = UDim2.fromOffset(500, 38),
 		BackgroundColor3 = Theme.Panel,
 		BorderSizePixel = 0,
 	}, PillRow)
-	Round(Pill, 17)
+	Round(Pill, 19)
 	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.3 }, Pill)
 	local Dot = New("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
@@ -1334,7 +1337,7 @@ local function StartStatsOverlay()
 		Position = UDim2.fromOffset(36, 0),
 		Size = UDim2.new(1, -50, 1, 0),
 		Font = Enum.Font.GothamMedium,
-		TextSize = 13,
+		TextSize = 14,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Text = "",
@@ -1358,11 +1361,12 @@ local function StartStatsOverlay()
 		PaddingRight = UDim.new(0, 14),
 	}, Panel)
 	New("UIGridLayout", {
-		CellSize = UDim2.fromOffset(290, 56),
-		CellPadding = UDim2.fromOffset(12, 10),
+		CellSize = UDim2.fromOffset(326, 60),
+		CellPadding = UDim2.fromOffset(12, 12),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, Panel)
 
+	-- one line: icon, title on the left, value on the right
 	local function AddCard(Order, Caption, IconId, Badge, Tint)
 		local Card = New("Frame", {
 			LayoutOrder = Order,
@@ -1384,7 +1388,7 @@ local function StartStatsOverlay()
 			New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromOffset(30, 30),
+				Size = UDim2.fromOffset(32, 32),
 				BackgroundTransparency = 1,
 				Image = IconId,
 				ScaleType = Enum.ScaleType.Fit,
@@ -1400,19 +1404,21 @@ local function StartStatsOverlay()
 		end
 
 		Label(Card, {
-			Position = UDim2.fromOffset(60, 8),
-			Size = UDim2.new(1, -68, 0, 14),
-			TextSize = 12,
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 60, 0.5, 0),
+			Size = UDim2.new(0, 120, 0, 20),
+			TextSize = 13,
 			TextColor3 = Theme.Muted,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Text = Caption,
 		})
 		return Label(Card, {
-			Position = UDim2.fromOffset(60, 24),
-			Size = UDim2.new(1, -68, 0, 26),
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -14, 0.5, 0),
+			Size = UDim2.new(1, -190, 0, 24),
 			Font = Enum.Font.GothamBold,
-			TextSize = 18,
-			TextXAlignment = Enum.TextXAlignment.Left,
+			TextSize = 17,
+			TextXAlignment = Enum.TextXAlignment.Right,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Text = "-",
 		})
@@ -1421,16 +1427,14 @@ local function StartStatsOverlay()
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
 	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
 	local ValueTokens = AddCard(3, "Reroll Tokens", Icons.Rerolls)
-	local ValueRerolls = AddCard(4, "Total Rerolls", Icons.Rerolls)
-	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
-	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
-	local ValueLevel = AddCard(7, "Level", nil, "LV", Theme.Accent)
-	local ValueUnits = AddCard(8, "Units owned", nil, "UN", Theme.Accent2)
+	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
+	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
+	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
 
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
 		LayoutOrder = 4,
-		Size = UDim2.new(1, 0, 0, 110),
+		Size = UDim2.new(1, 0, 0, 118),
 		BackgroundColor3 = Theme.Panel,
 		BackgroundTransparency = 0.1,
 		BorderSizePixel = 0,
@@ -1442,7 +1446,7 @@ local function StartStatsOverlay()
 		Label(Bars, {
 			Position = UDim2.fromOffset(18, Y),
 			Size = UDim2.new(0.5, -18, 0, 16),
-			TextSize = 13,
+			TextSize = 14,
 			TextColor3 = Theme.Muted,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Text = Caption,
@@ -1452,13 +1456,13 @@ local function StartStatsOverlay()
 			Position = UDim2.new(1, -18, 0, Y),
 			Size = UDim2.new(0.5, -18, 0, 16),
 			Font = Enum.Font.GothamMedium,
-			TextSize = 13,
+			TextSize = 14,
 			TextXAlignment = Enum.TextXAlignment.Right,
 			Text = "",
 		})
 		local Track = New("Frame", {
 			Position = UDim2.new(0, 18, 0, Y + 22),
-			Size = UDim2.new(1, -36, 0, 12),
+			Size = UDim2.new(1, -36, 0, 14),
 			BackgroundColor3 = Theme.Back,
 			BorderSizePixel = 0,
 		}, Bars)
@@ -1479,7 +1483,7 @@ local function StartStatsOverlay()
 	end
 
 	local SetLevelBar = AddBar(14, "Level progress", Theme.Accent, Theme.Accent2)
-	local SetGemBar = AddBar(62, "Gems to hunt", Color3.fromRGB(70, 200, 150), Theme.Good)
+	local SetGemBar = AddBar(66, "Gems to hunt", Color3.fromRGB(70, 200, 150), Theme.Good)
 
 	Label(Content, {
 		LayoutOrder = 5,
@@ -1497,6 +1501,16 @@ local function StartStatsOverlay()
 		return (Out:gsub("^,", ""))
 	end
 
+	-- "shadow_sorcerer" / "Shadow sorcerer" -> "Shadow Sorcerer"
+	local function Pretty(Id)
+		local Def = Units[Id]
+		local Name = type(Def) == "table" and Def.name or Id
+		local Text = tostring(Name or ""):gsub("_", " ")
+		return (Text:gsub("(%a)([%w']*)", function(First, Rest)
+			return First:upper() .. Rest:lower()
+		end))
+	end
+
 	local function Refresh()
 		local Prof = Profile()
 		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or nil
@@ -1509,7 +1523,8 @@ local function StartStatsOverlay()
 
 		-- header + pill
 		Sub.Text = ("%s   ·   %02d:%02d:%02d"):format(Player.Name, math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
-		local Parts = { Config.Enabled and "RUNNING" or "PAUSED", Loader.IsLobby and "Lobby" or "Match" }
+		local Running = Config.Enabled ~= false
+		local Parts = { Running and "RUNNING" or "PAUSED", Loader.IsLobby and "Lobby" or "Match" }
 		local WaveValue = workspace:FindFirstChild("_wave_num")
 		if not Loader.IsLobby and WaveValue and WaveValue:IsA("ValueBase") then
 			Parts[#Parts + 1] = "Wave " .. tostring(WaveValue.Value)
@@ -1519,14 +1534,12 @@ local function StartStatsOverlay()
 			Parts[#Parts + 1] = ActivityNames[Current.Kind] or tostring(Current.Kind)
 		end
 		PillText.Text = table.concat(Parts, "   ·   ")
-		Dot.BackgroundColor3 = Config.Enabled and Theme.Good or Theme.Warn
+		Dot.BackgroundColor3 = Running and Theme.Good or Theme.Warn
 
 		-- cards
 		local CompassCount = tonumber(Items[Config.CompassId])
-		local Pick = tostring(Config.CompassPick or "")
-		Pick = Pick:sub(1, 1):upper() .. Pick:sub(2)
 		if State.CompassDone then
-			ValueCompass.Text = "Used  →  " .. Pick
+			ValueCompass.Text = Pretty(Config.CompassPick)
 			ValueCompass.TextColor3 = Theme.Good
 		elseif CompassCount and CompassCount > 0 then
 			ValueCompass.Text = ("x%d ready"):format(CompassCount)
@@ -1537,11 +1550,9 @@ local function StartStatsOverlay()
 		end
 		ValueGems.Text = Fmt(Gems)
 		ValueTokens.Text = Fmt(Prof.trait_reroll_tokens)
-		ValueRerolls.Text = Fmt(Prof.total_trait_rerolls)
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
 		ValueLevel.Text = tostring(Level)
-		ValueUnits.Text = Fmt(CountEntries(Collection().owned_units))
 
 		-- bars
 		local Endgame = math.max(Config.EndgameLevel, 1)
@@ -1550,9 +1561,50 @@ local function StartStatsOverlay()
 		SetGemBar(Gems / Hunt, ("%s / %s   ·   %d%%"):format(Fmt(Gems), Fmt(Hunt), math.floor(math.clamp(Gems / Hunt, 0, 1) * 100)))
 	end
 
-	pcall(function()
-		game:GetService("RunService"):Set3dRenderingEnabled(false)
+	-- black screen switch: its own ScreenGui above the overlay, so it stays
+	-- clickable while the black screen is hidden. Off = overlay hidden and 3D
+	-- rendering back on. The choice is saved and survives teleports.
+	local BlackOn = State.BlackScreen ~= false
+
+	local ToggleGui = Instance.new("ScreenGui")
+	ToggleGui.Name = "AAKaitunToggle"
+	ToggleGui.ResetOnSpawn = false
+	ToggleGui.IgnoreGuiInset = true
+	ToggleGui.DisplayOrder = 1001
+	ToggleGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	ToggleGui.Parent = Holder
+
+	local Toggle = New("TextButton", {
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -16, 1, -16),
+		Size = UDim2.fromOffset(190, 40),
+		BackgroundColor3 = Theme.Panel,
+		BorderSizePixel = 0,
+		AutoButtonColor = true,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 14,
+		TextColor3 = Theme.Text,
+		Text = "",
+	}, ToggleGui)
+	Round(Toggle, 20)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1.5, Transparency = 0.1 }, Toggle)
+
+	local function ApplyBlack(Value)
+		BlackOn = Value
+		Back.Visible = Value
+		pcall(function()
+			game:GetService("RunService"):Set3dRenderingEnabled(not Value)
+		end)
+		Toggle.Text = Value and "Black screen: ON" or "Black screen: OFF"
+		Toggle.TextColor3 = Value and Theme.Good or Theme.Muted
+		State.BlackScreen = Value
+		SaveState()
+	end
+
+	Toggle.Activated:Connect(function()
+		ApplyBlack(not BlackOn)
 	end)
+	ApplyBlack(BlackOn)
 
 	TweenService:Create(Content, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		GroupTransparency = 0,
@@ -1560,12 +1612,14 @@ local function StartStatsOverlay()
 
 	task.spawn(function()
 		while Alive() do
-			pcall(Refresh)
+			if BlackOn then
+				pcall(Refresh)
+			end
 			task.wait(1)
 		end
 	end)
 	pcall(Refresh)
-	Log("stats overlay on")
+	Log("stats overlay on (black screen %s)", BlackOn and "on" or "off")
 end
 
 -- ============================================================ LOBBY =====
@@ -3128,12 +3182,19 @@ RunLobby = function()
 			Log("plan error: %s", tostring(Err))
 		end
 
-		-- wait for the teleport; if it never comes, cancel any stale queue and re-plan
-		local Deadline = os.clock() + Config.QueueTimeout
-		while Alive() and os.clock() < Deadline do
+		-- wait for the teleport. A matchmaking queue gets QueueTimeout (5 min);
+		-- anything else gets the shorter JoinTimeout. Then cancel the queue,
+		-- wait out the matchmaking cooldown and re-plan (-> request again).
+		local Started = os.clock()
+		while Alive() and Loader.IsLobby do
 			task.wait(1)
+			local Limit = MatchmakingGui() and Config.QueueTimeout or Config.JoinTimeout
+			if os.clock() - Started >= Limit then
+				break
+			end
 		end
-		if MatchmakingGui() then
+		if Alive() and MatchmakingGui() then
+			Log("queued too long (%ds) -> leaving matchmaking, retrying in %ds", math.floor(os.clock() - Started), Config.MatchmakingRetryWait)
 			CallWithTimeout(10, InvokeServer, "leave_matchmaking")
 			task.wait(Config.MatchmakingRetryWait)
 		end
