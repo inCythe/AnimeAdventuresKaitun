@@ -71,7 +71,6 @@ local GetHui = gethui
 -- single instance guard --------------------------------------------------
 local Token = {}
 Env.AAKaitunToken = Token
-Env.AAKaitunLoaded = false -- set true once the session is up; loader.lua polls this
 
 local function Alive()
 	return Env.AAKaitunToken == Token
@@ -3187,8 +3186,137 @@ local function Plan()
 	return JoinInfiniteLoop()
 end
 
+-- lobby status widget -------------------------------------------------------
+-- compact card showing the script is alive: current activity, level/gems,
+-- countdown to the next challenge reset, and an indeterminate progress bar
+local function StartLobbyWidget()
+	local Old = PlayerGui:FindFirstChild("AAKaitunLobby")
+	if Old then
+		Old:Destroy()
+	end
+	local Tween = game:GetService("TweenService")
+
+	local Gui = Instance.new("ScreenGui")
+	Gui.Name = "AAKaitunLobby"
+	Gui.ResetOnSpawn = false
+	Gui.IgnoreGuiInset = true
+	Gui.DisplayOrder = 900
+	Gui.Parent = PlayerGui
+
+	local function New(Class, Props, Parent)
+		local Item = Instance.new(Class)
+		for Key, Value in pairs(Props) do
+			Item[Key] = Value
+		end
+		Item.Parent = Parent
+		return Item
+	end
+
+	local Card = New("Frame", {
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 16, 1, -16),
+		Size = UDim2.fromOffset(300, 92),
+		BackgroundColor3 = Color3.fromRGB(12, 15, 27),
+		BackgroundTransparency = 0.15,
+		BorderSizePixel = 0,
+	}, Gui)
+	New("UICorner", { CornerRadius = UDim.new(0, 12) }, Card)
+	New("UIStroke", { Color = Color3.fromRGB(52, 60, 100), Thickness = 1, Transparency = 0.3 }, Card)
+
+	New("TextLabel", {
+		Position = UDim2.fromOffset(14, 8),
+		Size = UDim2.new(1, -28, 0, 18),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		TextColor3 = Color3.fromRGB(245, 247, 255),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "AA Kaitun",
+	}, Card)
+
+	local Status = New("TextLabel", {
+		Position = UDim2.fromOffset(14, 28),
+		Size = UDim2.new(1, -28, 0, 18),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextColor3 = Color3.fromRGB(110, 230, 150),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "Working...",
+	}, Card)
+
+	local Sub = New("TextLabel", {
+		Position = UDim2.fromOffset(14, 46),
+		Size = UDim2.new(1, -28, 0, 16),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextColor3 = Color3.fromRGB(150, 160, 192),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "",
+	}, Card)
+
+	local Track = New("Frame", {
+		Position = UDim2.fromOffset(14, 68),
+		Size = UDim2.new(1, -28, 0, 8),
+		BackgroundColor3 = Color3.fromRGB(45, 45, 55),
+		BorderSizePixel = 0,
+	}, Card)
+	New("UICorner", { CornerRadius = UDim.new(0, 4) }, Track)
+	local Fill = New("Frame", {
+		Size = UDim2.fromOffset(60, 1),
+		Position = UDim2.fromOffset(-60, 0),
+		BackgroundColor3 = Color3.fromRGB(110, 150, 255),
+		BorderSizePixel = 0,
+	}, Track)
+	New("UICorner", { CornerRadius = UDim.new(0, 4) }, Fill)
+
+	-- slide the bar back and forth forever
+	task.spawn(function()
+		while Alive() do
+			local TrackW = Track.AbsoluteSize.X
+			if TrackW > 0 then
+				Fill.Size = UDim2.fromOffset(math.min(60, TrackW * 0.4), 1)
+				Tween:Create(Fill, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+					Position = UDim2.fromOffset(TrackW - Fill.Size.X.Offset, 0),
+				}):Play()
+				task.wait(1.15)
+				Tween:Create(Fill, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+					Position = UDim2.fromOffset(-Fill.Size.X.Offset, 0),
+				}):Play()
+				task.wait(1.15)
+			else
+				task.wait(0.5)
+			end
+		end
+	end)
+
+	local function Refresh()
+		local Current = State.Current
+		local Activity = Current and Current.Kind and tostring(Current.Kind) or "planning"
+		Status.Text = "Working - " .. activity
+		local Left = select(1, NextResetInfo())
+		local Mm = math.floor(Left / 60)
+		local Ss = math.floor(Left % 60)
+		Sub.Text = ("Lv %d  -  gems %s  -  next challenges %d:%02d"):format(
+			GetLevel(), tostring(GetGems()), Mm, Ss)
+	end
+
+	task.spawn(function()
+		while Alive() do
+			pcall(Refresh)
+			task.wait(1)
+		end
+	end)
+	Refresh()
+	Log("lobby widget on")
+end
+
 RunLobby = function()
 	Log("lobby mode")
+	if Config.StatsOverlay then
+		StartLobbyWidget()
+	end
 	GroupAndFavorite()
 	RedeemCodes()
 	UseCompass()
@@ -4405,7 +4533,6 @@ local function Main()
 		warn("[AA Kaitun] profile never loaded")
 		return
 	end
-	Env.AAKaitunLoaded = true
 	AntiAfk()
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()

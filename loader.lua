@@ -14,12 +14,6 @@ if not game:IsLoaded() then
 	until game:IsLoaded()
 end
 
--- wait until the local player exists
-local LocalPlayer = game:GetService("Players").LocalPlayer
-if not LocalPlayer then
-	LocalPlayer = game:GetService("Players").PlayerAdded:Wait()
-end
-
 if game.GameId ~= UNIVERSE_ID then
 	return
 end
@@ -33,34 +27,11 @@ pcall(function()
 	end
 end)
 
-local GEN = (getgenv and getgenv()) or _G
-
-local function RunScript()
-	GEN.AAKaitunLoaded = false
-	local Ok, Fn = pcall(function()
-		return loadstring(game:HttpGet(SCRIPT_URL))
-	end)
-	if Ok and type(Fn) == "function" then
-		-- spawn so this loader stays free to poll the loaded flag; the
-		-- script's single-instance guard retires any previous copy
-		task.spawn(Fn)
-	else
-		warn("[AA Kaitun] loader failed to fetch script:", Fn)
-	end
-end
-
-RunScript()
-
--- the script sets getgenv().AAKaitunLoaded once its session is up; if it
--- never does (slow load, early error, dead remote), run it again
-for _ = 1, 5 do
-	local Deadline = os.clock() + 60
-	while os.clock() < Deadline do
-		if GEN.AAKaitunLoaded then
-			return
-		end
-		task.wait(1)
-	end
-	warn("[AA Kaitun] script not loaded after 60s, retrying")
-	RunScript()
+local Ok, Fn = pcall(function()
+	return loadstring(game:HttpGet(SCRIPT_URL))
+end)
+if Ok and type(Fn) == "function" then
+	task.spawn(Fn)
+else
+	warn("[AA Kaitun] loader failed to fetch script:", Fn)
 end
