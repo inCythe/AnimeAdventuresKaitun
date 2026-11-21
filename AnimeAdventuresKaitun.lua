@@ -71,6 +71,7 @@ local GetHui = gethui
 -- single instance guard --------------------------------------------------
 local Token = {}
 Env.AAKaitunToken = Token
+Env.AAKaitunLoaded = false -- set true once the session is up; loader.lua polls this
 
 local function Alive()
 	return Env.AAKaitunToken == Token
@@ -195,6 +196,7 @@ local Config = {
 	MatchmakingRetries = 5,
 	QueueTimeout = 300,           -- queued this long (5 min) -> leave, wait, queue again
 	JoinTimeout = 90,             -- a join that never opened a queue or teleported
+	IdleWait = 5,                 -- re-plan this soon when no join was requested
 
 	-- webhook reports (leave the url empty to disable)
 	WebhookUrl = "",
@@ -3177,18 +3179,22 @@ RunLobby = function()
 	EquipTeam()
 
 	while Alive() and Loader.IsLobby do
-		local Ok, Err = pcall(Plan)
+		local Ok, Requested = pcall(Plan)
 		if not Ok then
-			Log("plan error: %s", tostring(Err))
+			Log("plan error: %s", tostring(Requested))
+			Requested = nil
 		end
 
 		-- wait for the teleport. A matchmaking queue gets QueueTimeout (5 min);
-		-- anything else gets the shorter JoinTimeout. Then cancel the queue,
-		-- wait out the matchmaking cooldown and re-plan (-> request again).
+		-- a plain join gets JoinTimeout; when Plan requested nothing (idle,
+		-- challenges-only, failed join) re-plan after IdleWait instead of
+		-- sitting out the full timeout
 		local Started = os.clock()
 		while Alive() and Loader.IsLobby do
 			task.wait(1)
-			local Limit = MatchmakingGui() and Config.QueueTimeout or Config.JoinTimeout
+			local Limit = Requested
+				and (MatchmakingGui() and Config.QueueTimeout or Config.JoinTimeout)
+				or Config.IdleWait
 			if os.clock() - Started >= Limit then
 				break
 			end
@@ -4365,6 +4371,7 @@ local function Main()
 		warn("[AA Kaitun] profile never loaded")
 		return
 	end
+	Env.AAKaitunLoaded = true
 	AntiAfk()
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
