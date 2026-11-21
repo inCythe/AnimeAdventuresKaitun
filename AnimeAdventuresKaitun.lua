@@ -3303,7 +3303,7 @@ local function StartLobbyWidget()
 	local function Refresh()
 		local Current = State.Current
 		local Activity = Current and Current.Kind and tostring(Current.Kind) or "planning"
-		Status.Text = "Working - " .. activity
+		Status.Text = "Working - " .. Activity
 		local Left = select(1, NextResetInfo())
 		local Mm = math.floor(Left / 60)
 		local Ss = math.floor(Left % 60)
