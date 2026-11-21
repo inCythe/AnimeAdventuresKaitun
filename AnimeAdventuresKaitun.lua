@@ -159,7 +159,7 @@ local Config = {
 
 	-- compass (CompassUnit = the pick AND the hunt target)
 	CompassId = "celestial_compass_u21",
-	CompassPick = "elyssia",
+	CompassUnit = "elyssia",
 	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
 
 	-- group + favorite
@@ -266,7 +266,7 @@ if type(UserConfig) == "table" then
 		Config.EndgameLevel = math.floor(Num(UserConfig.TargetLevel))
 	end
 	if UserConfig.CompassUnit ~= nil then
-		Config.CompassPick = tostring(UserConfig.CompassUnit):lower()
+		Config.CompassUnit = tostring(UserConfig.CompassUnit):lower()
 	end
 	if type(UserConfig.Team) == "table" then
 		Config.TeamUnits = UserConfig.Team
@@ -315,6 +315,7 @@ local StateFile = "AAKaitun_" .. tostring(Player.UserId) .. ".json"
 local State = {
 	Summoned = false,
 	CompassDone = false,
+	CompassUnit = nil,           -- last resolved compass/hunt unit (survives teleports)
 	GroupDone = false,
 	GroupAttempts = 0,
 	HuntDone = false,
@@ -582,12 +583,12 @@ local function NormalizeUnitId(Id)
 	return UnitIdLookup[Lower] or UnitIdLookup[Lower:gsub("[^%w]", "")] or Lower
 end
 
--- CompassPick doubles as the hunt target; resolve display names once
-Config.CompassPick = NormalizeUnitId(Config.CompassPick) or Config.CompassPick
+-- CompassUnit doubles as the hunt target; resolve display names once
+Config.CompassUnit = NormalizeUnitId(Config.CompassUnit) or Config.CompassUnit
 
 -- the unit being hunted
 local function HuntTargets()
-	return { Config.CompassPick }
+	return { Config.CompassUnit }
 end
 
 local function HuntRemaining()
@@ -1082,7 +1083,7 @@ local Milestones = {
 	{
 		Key = "CompassUsed",
 		Title = "Celestial Compass used",
-		Text = "Picked " .. UnitDisplayName(Config.CompassPick) .. ".",
+		Text = "Picked " .. UnitDisplayName(Config.CompassUnit) .. ".",
 		Check = function()
 			return State.CompassDone == true
 		end,
@@ -1539,7 +1540,7 @@ local function StartStatsOverlay()
 		-- cards
 		local CompassCount = tonumber(Items[Config.CompassId])
 		if State.CompassDone then
-			ValueCompass.Text = Pretty(Config.CompassPick)
+			ValueCompass.Text = Pretty(Config.CompassUnit)
 			ValueCompass.TextColor3 = Theme.Good
 		elseif CompassCount and CompassCount > 0 then
 			ValueCompass.Text = ("x%d ready"):format(CompassCount)
@@ -1992,7 +1993,7 @@ local function UseCompass()
 	if State.CompassDone then
 		return
 	end
-	if CompassUsedOnServer() or HasUnit(Config.CompassPick) then
+	if CompassUsedOnServer() or HasUnit(Config.CompassUnit) then
 		State.CompassDone = true
 		SaveState()
 		return
@@ -2008,7 +2009,7 @@ local function UseCompass()
 		return
 	end
 	local Ok, Result = CallWithTimeout(8, function()
-		return Remote:InvokeServer(Config.CompassId, Config.CompassPick)
+		return Remote:InvokeServer(Config.CompassId, Config.CompassUnit)
 	end)
 	if not Ok then
 		Log("compass failed: %s", tostring(Result))
@@ -2025,7 +2026,7 @@ local function UseCompass()
 	if Result ~= false then
 		State.CompassDone = true
 		SaveState()
-		Log("compass used -> %s", Config.CompassPick)
+		Log("compass used -> %s", Config.CompassUnit)
 	end
 end
 
@@ -2608,7 +2609,7 @@ AutoSell = function()
 			KeepIds[Norm] = true
 		end
 	end
-	AddKeep(Config.CompassPick)
+	AddKeep(Config.CompassUnit)
 	for _, Id in ipairs(Config.TeamUnits or {}) do
 		AddKeep(Id)
 	end
@@ -3160,7 +3161,7 @@ local function Plan()
 	-- challenges-only: once the compass unit is actually summoned/owned, never
 	-- join infinite — story still runs until EndgameLevel so low-level
 	-- accounts keep progressing (using the compass item alone does not count)
-	if Config.ChallengesOnlyAfterCompass and HasUnit(Config.CompassPick) then
+	if Config.ChallengesOnlyAfterCompass and HasUnit(Config.CompassUnit) then
 		return false
 	end
 	return JoinInfiniteLoop()
@@ -4353,6 +4354,13 @@ end -- end match scope block
 -- entry ------------------------------------------------------------------
 local function Main()
 	LoadState()
+	-- getgenv().Kaitun may be gone after a teleport re-run; fall back to the
+	-- last resolved unit saved in the state file, then persist the result
+	if UserConfig.CompassUnit == nil and type(State.CompassUnit) == "string" and State.CompassUnit ~= "" then
+		Config.CompassUnit = NormalizeUnitId(State.CompassUnit) or State.CompassUnit
+	end
+	State.CompassUnit = Config.CompassUnit
+	SaveState()
 	if not WaitForSession() then
 		warn("[AA Kaitun] profile never loaded")
 		return
