@@ -1012,7 +1012,6 @@ local function SendWebhook(Title, Description, Color)
 		{ name = "Level", value = tostring(GetLevel()), inline = true },
 		{ name = "Gems", value = tostring(tonumber(Prof.gem_amount) or GetGems()), inline = true },
 		{ name = "Reroll Tokens", value = tostring(tonumber(Prof.trait_reroll_tokens) or 0), inline = true },
-		{ name = "Total Rerolls", value = tostring(tonumber(Prof.total_trait_rerolls) or 0), inline = true },
 		{ name = "Remnants", value = tostring(ItemCount("star_remnant")), inline = true },
 		{ name = "Remnants (Ltd)", value = tostring(ItemCount("star_remnant_limited")), inline = true },
 	}
