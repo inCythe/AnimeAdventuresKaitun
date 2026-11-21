@@ -143,7 +143,7 @@ local Config = {
 	SummonBanner = "EventClover",
 	HuntBanner = "EventClover",
 	HuntGems = 20000,             -- go back to lobby and hunt when gems >= this
-	MinGems = 200,                -- hunt never leaves fewer gems than this
+	MinGems = 0,                -- hunt never leaves fewer gems than this
 
 	-- compass (CompassUnit = the pick AND the hunt target)
 	CompassId = "celestial_compass_u21",
