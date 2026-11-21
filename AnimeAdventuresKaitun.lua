@@ -3021,7 +3021,8 @@ CurrentSlot = function()
 	return math.floor((Now - Config.ChallengeResetGrace) / Config.ChallengeResetSeconds)
 end
 
--- seconds until the next :00/:30 challenge reset, plus the reset timestamp
+-- seconds until the next :00/:30 challenge reset, plus the reset timestamp.
+-- resets land on multiples of ChallengeResetSeconds; server time when available
 NextResetInfo = function()
 	local Now = os.time()
 	local Ok, ServerNow = pcall(function()
@@ -3030,8 +3031,11 @@ NextResetInfo = function()
 	if Ok and tonumber(ServerNow) then
 		Now = ServerNow
 	end
-	local Next = (math.floor(Now / Config.ChallengeResetSeconds) + 1) * Config.ChallengeResetSeconds
-	return Next - Now, Next
+	local Into = Now % Config.ChallengeResetSeconds -- seconds past the last reset
+	if Into == 0 then
+		Into = Config.ChallengeResetSeconds -- exactly on a reset: next one is a full period away
+	end
+	return Config.ChallengeResetSeconds - Into, Now + (Config.ChallengeResetSeconds - Into)
 end
 
 local function JoinChallenge(Def, Uuid)
