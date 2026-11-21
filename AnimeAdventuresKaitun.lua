@@ -42,17 +42,17 @@ if not game:IsLoaded() then
 end
 
 -- services ---------------------------------------------------------------
-local ReplicatedStorage = game:WaitForChild("ReplicatedStorage")
-local HttpService = game:WaitForChild("HttpService")
-local GroupService = game:WaitForChild("GroupService")
-local AvatarEditorService = game:WaitForChild("AvatarEditorService")
-local GuiService = game:WaitForChild("GuiService")
-local VirtualInputManager = game:WaitForChild("VirtualInputManager")
-local VirtualUser = game:WaitForChild("VirtualUser")
-local CollectionService = game:WaitForChild("CollectionService")
-local CoreGui = game:WaitForChild("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local GroupService = game:GetService("GroupService")
+local AvatarEditorService = game:GetService("AvatarEditorService")
+local GuiService = game:GetService("GuiService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualUser = game:GetService("VirtualUser")
+local CollectionService = game:GetService("CollectionService")
+local CoreGui = game:GetService("CoreGui")
 
-local Players = game:WaitForChild("Players")
+local Players = game:GetService("Players")
 local Player = Players.LocalPlayer
 
 local PlayerGui = Player:WaitForChild("PlayerGui")
