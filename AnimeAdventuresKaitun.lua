@@ -155,10 +155,9 @@ local Config = {
 	SummonBanner = "EventClover",
 	HuntBanner = "EventClover",
 	HuntGems = 20000,             -- go back to lobby and hunt when gems >= this
-	HuntUnit = "elyssia",
 	MinGems = 200,                -- hunt never leaves fewer gems than this
 
-	-- compass
+	-- compass (CompassUnit = the pick AND the hunt target)
 	CompassId = "celestial_compass_u21",
 	CompassPick = "elyssia",
 	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
@@ -267,9 +266,7 @@ if type(UserConfig) == "table" then
 		Config.EndgameLevel = math.floor(Num(UserConfig.TargetLevel))
 	end
 	if UserConfig.CompassUnit ~= nil then
-		local Unit = tostring(UserConfig.CompassUnit):lower()
-		Config.CompassPick = Unit
-		Config.HuntUnit = Unit
+		Config.CompassPick = tostring(UserConfig.CompassUnit):lower()
 	end
 	if type(UserConfig.Team) == "table" then
 		Config.TeamUnits = UserConfig.Team
@@ -585,9 +582,12 @@ local function NormalizeUnitId(Id)
 	return UnitIdLookup[Lower] or UnitIdLookup[Lower:gsub("[^%w]", "")] or Lower
 end
 
--- the unit being hunted (CompassUnit sets both CompassPick and HuntUnit)
+-- CompassPick doubles as the hunt target; resolve display names once
+Config.CompassPick = NormalizeUnitId(Config.CompassPick) or Config.CompassPick
+
+-- the unit being hunted
 local function HuntTargets()
-	return { Config.HuntUnit }
+	return { Config.CompassPick }
 end
 
 local function HuntRemaining()
@@ -2608,7 +2608,6 @@ AutoSell = function()
 			KeepIds[Norm] = true
 		end
 	end
-	AddKeep(Config.HuntUnit)
 	AddKeep(Config.CompassPick)
 	for _, Id in ipairs(Config.TeamUnits or {}) do
 		AddKeep(Id)
