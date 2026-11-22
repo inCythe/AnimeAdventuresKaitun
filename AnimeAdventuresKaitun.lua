@@ -3372,6 +3372,7 @@ local Placer = {
 	LastWarn = 0,
 	ModelIds = setmetatable({}, { __mode = "k" }),
 	Occupied = {},
+	OccupiedAt = 0,
 	Core = nil,
 	Paths = nil,
 	Grid = nil,
@@ -4081,7 +4082,14 @@ end
 
 -- every unit in the match (ours AND other players') retires the ONE node it
 -- is standing on. Occupied holds exactly those nodes — neighbors stay free.
-function Placer.RefreshOccupied()
+-- Throttled: this is pure data (no parts/raycasting), but it still walks every
+-- unit x node pair, so callers get at most one rebuild per 0.4s unless forced.
+function Placer.RefreshOccupied(Force)
+	local Now = os.clock()
+	if not Force and Now - Placer.OccupiedAt < 0.4 then
+		return
+	end
+	Placer.OccupiedAt = Now
 	Placer.Occupied = {}
 	local Seen = {}
 	local function Check(Model)
@@ -4328,8 +4336,9 @@ local function WatchUnits()
 			return
 		end
 		LastUnitPoke = Now
-		Placer.NeedScan = true
-		pcall(Placer.RefreshOccupied)
+		-- node geometry is static — a unit spawning/dying only changes which
+		-- node is occupied, so refresh the data, don't rescan the map
+		Placer.RefreshOccupied(true)
 	end
 	local function HookFolder(Folder)
 		Folder.ChildAdded:Connect(Poke)
