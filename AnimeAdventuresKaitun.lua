@@ -1007,7 +1007,23 @@ local RequestFn = (syn and syn.request) or http_request or request or (http and 
 local WebhookSent = Env.AAKaitunWebhookSent or {}
 Env.AAKaitunWebhookSent = WebhookSent
 
-local function SendWebhook(Title, Description, Color, Key)
+local function SendWebhook(Title, Description, Color, Key, Icon)
+	local function Commas(Value)
+		local Text = tostring(math.floor(tonumber(Value) or 0))
+		local Sign, Digits = Text:match("^(-?)(%d+)$")
+		if not Digits then
+			return Text
+		end
+		Digits = Digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+		return Sign .. Digits
+	end
+
+	local function ProgressBar(Value, Max, Width)
+		Width = Width or 10
+		local Fraction = Max > 0 and math.clamp(Value / Max, 0, 1) or 0
+		local Filled = math.floor(Fraction * Width + 0.5)
+		return string.rep("\u{25B0}", Filled) .. string.rep("\u{25B1}", Width - Filled)
+	end
 	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
 	end
@@ -1022,26 +1038,48 @@ local function SendWebhook(Title, Description, Color, Key)
 	local NormalItems = type(Prof.inventory) == "table"
 		and type(Prof.inventory.normal_items) == "table"
 		and Prof.inventory.normal_items or {}
-	local function ItemCount(Key)
-		return tonumber(NormalItems[Key]) or 0
+	local function ItemCount(Name)
+		return tonumber(NormalItems[Name]) or 0
 	end
+	local Level = tonumber(GetLevel()) or 0
+	local Gems = tonumber(Prof.gem_amount) or GetGems()
+	local Endgame = tonumber(Config.EndgameLevel) or 0
+	local Progress
+	if Endgame > 0 and Level < Endgame then
+		Progress = ProgressBar(Level, Endgame) .. "  `" .. Level .. "/" .. Endgame .. "`"
+	else
+		Progress = "\u{2705} Endgame reached"
+	end
+	local Account = Config.WebhookShowName and Player.Name or "Hidden"
+
 	local Fields = {
-		{ name = "Account", value = Config.WebhookShowName and Player.Name or "hidden", inline = true },
-		{ name = "Level", value = tostring(GetLevel()), inline = true },
-		{ name = "Gems", value = tostring(tonumber(Prof.gem_amount) or GetGems()), inline = true },
-		{ name = "Reroll Tokens", value = tostring(tonumber(Prof.trait_reroll_tokens) or 0), inline = true },
-		{ name = "Remnants", value = tostring(ItemCount("star_remnant")), inline = true },
-		{ name = "Remnants (Ltd)", value = tostring(ItemCount("star_remnant_limited")), inline = true },
+		{ name = "\u{2B50} Level", value = "`" .. Commas(Level) .. "`", inline = true },
+		{ name = "\u{1F48E} Gems", value = "`" .. Commas(Gems) .. "`", inline = true },
+		{ name = "\u{1F3B2} Reroll Tokens", value = "`" .. Commas(tonumber(Prof.trait_reroll_tokens) or 0) .. "`", inline = true },
+		{ name = "\u{2728} Remnants", value = "`" .. Commas(ItemCount("star_remnant")) .. "`", inline = true },
+		{ name = "\u{1F31F} Remnants (Ltd)", value = "`" .. Commas(ItemCount("star_remnant_limited")) .. "`", inline = true },
+		{ name = "\u{1F4C8} Progress", value = Progress, inline = true },
 	}
+	local Embed = {
+		author = { name = tostring(Config.WebhookName) .. "  \u{2022}  " .. Account },
+		title = (Icon and (Icon .. "  ") or "") .. tostring(Title),
+		color = Color or 5793266,
+		fields = Fields,
+		footer = { text = "Anime Adventures  \u{2022}  Kaitun" },
+		timestamp = DateTime.now():ToIsoDate(),
+	}
+	if Description and Description ~= "" then
+		Embed.description = "> " .. Description
+	end
+	if Config.WebhookShowName and Player.UserId then
+		Embed.thumbnail = {
+			url = "https://www.roblox.com/headshot-thumbnail/image?userId="
+				.. Player.UserId .. "&width=420&height=420&format=png",
+		}
+	end
 	local Body = {
 		username = Config.WebhookName,
-		embeds = { {
-			title = Title,
-			description = Description,
-			color = Color or 5793266,
-			fields = Fields,
-			timestamp = DateTime.now():ToIsoDate(),
-		} },
+		embeds = { Embed },
 	}
 	if Config.WebhookPing ~= "" then
 		Body.content = Config.WebhookPing
@@ -1063,6 +1101,7 @@ local Milestones = {
 		Key = "Level" .. Config.NormalChallengeLevel,
 		Title = "Level " .. Config.NormalChallengeLevel .. " reached",
 		Text = "Normal challenges are unlocked.",
+		Icon = "\u{2B50}", Color = 15844367,
 		Check = function()
 			return GetLevel() >= Config.NormalChallengeLevel
 		end,
@@ -1071,6 +1110,7 @@ local Milestones = {
 		Key = "Level" .. Config.DailyChallengeLevel,
 		Title = "Level " .. Config.DailyChallengeLevel .. " reached",
 		Text = "Daily challenges are unlocked.",
+		Icon = "\u{1F4C5}", Color = 15844367,
 		Check = function()
 			return GetLevel() >= Config.DailyChallengeLevel
 		end,
@@ -1079,6 +1119,7 @@ local Milestones = {
 		Key = "Level" .. Config.EndgameLevel,
 		Title = "Level " .. Config.EndgameLevel .. " reached",
 		Text = "Switching to the act 6 clear, then Infinite.",
+		Icon = "\u{1F680}", Color = 15105570,
 		Check = function()
 			return GetLevel() >= Config.EndgameLevel
 		end,
@@ -1087,6 +1128,7 @@ local Milestones = {
 		Key = "Gems" .. Config.HuntGems,
 		Title = Config.HuntGems .. " gems reached",
 		Text = "Heading to the lobby to hunt.",
+		Icon = "\u{1F48E}", Color = 3447003,
 		Check = function()
 			return GetGems() >= Config.HuntGems
 		end,
@@ -1094,6 +1136,7 @@ local Milestones = {
 	{
 		Key = "CompassUsed",
 		Title = "Celestial Compass used",
+		Icon = "\u{1F9ED}", Color = 10181046,
 		Text = "Picked " .. UnitDisplayName(Config.CompassUnit) .. ".",
 		Check = function()
 			return State.CompassDone == true
@@ -1102,6 +1145,7 @@ local Milestones = {
 	{
 		Key = "FirstSummon",
 		Title = "First 10x summon done",
+		Icon = "\u{1F3B0}", Color = 15277667,
 		Text = "Summoned once on " .. Config.SummonBanner .. ".",
 		Check = function()
 			return State.Summoned == true
@@ -1111,7 +1155,7 @@ local Milestones = {
 		Key = "HuntDone",
 		Title = "Hunt complete",
 		Text = "All wanted units are in the collection; the configured team is now used.",
-		Color = 5763719,
+		Icon = "\u{1F3C6}", Color = 5763719,
 		Check = function()
 			return State.HuntDone == true
 		end,
@@ -1129,7 +1173,7 @@ local function StartMilestoneWatcher()
 						SaveState()
 						Log("milestone: %s", Milestone.Title)
 						SendWebhook(Milestone.Title, Milestone.Text, Milestone.Color,
-							"goal:" .. tostring(Milestone.Key))
+							"goal:" .. tostring(Milestone.Key), Milestone.Icon)
 					end
 				end
 			end
@@ -2555,7 +2599,7 @@ local function HuntUnit()
 				local Drops = #Names > 0 and (" Drops: " .. table.concat(Names, ", ") .. ".") or ""
 				SendWebhook("Hunted " .. UnitDisplayName(Target),
 					"Got " .. UnitDisplayName(Target) .. " after " .. Rolls .. " x10 rolls." .. Drops,
-					5763719, "hunt:" .. tostring(Target))
+					5763719, "hunt:" .. tostring(Target), "\u{1F3AF}")
 			end
 			return true
 		end
@@ -3466,7 +3510,11 @@ local PlaceConfig = {
 	DefaultRange = 8, -- used when a unit has no range stat
 	ClusterWeight = 4, -- keep combat units packed together instead of scattering
 	OutOfRangePenalty = 1000, -- nodes this far outside range are essentially skipped
-	UpgradesPerTick = 3,
+	-- action queue
+	QueueSize = 40, -- entries kept in the queue (places + upgrades, best first)
+	ActionsPerTick = 6, -- successful actions per tick
+	ExtraTries = 8, -- extra rejected / skipped attempts allowed per tick
+	PendingSeconds = 0.75, -- a spend counts against the money until the balance replicates
 	UpgradeSpreadWeight = 40,
 	UpgradeValueWeight = 10000,
 	UpgradeRecencyWeight = 0.5,
@@ -3486,7 +3534,7 @@ local PlaceConfig = {
 	MaxDefenseSafety = 6,
 	MinCombatBeforeFarms = 2, -- floor; real value = lanes + 2
 	MaxCombatBeforeFarms = 6,
-	FarmQuota = 3, -- how many farm units to place before going all-in on combat
+	FarmCopies = 5, -- max copies of EACH farm unit to place (also capped by the unit's spawn cap)
 	AoeDefaultRadius = 4, -- fallback AoE radius when an attack has an aoe but no size field
 	-- placement: must reach the path, then prefer the scan center
 	RangeSafety = 0.8, -- max distance from node to path as a fraction of range
@@ -4541,8 +4589,12 @@ end
 
 -- Farm ROI: extra yen per wave, what that upgrade costs, and how many waves
 -- are left to earn it back. Higher `value` = better investment.
-local function FarmRoi(UnitId, Level, Cost)
-	local Cur = Placer.FarmStats and Placer.FarmStats[UnitId]
+local function FarmRoi(UnitId, Level, Cost, Model)
+	-- read the copy's own yield: FarmStats only holds the first copy found
+	local Cur = Model and tonumber(StatValue(Model, "farm_amount"))
+	if Cur == nil then
+		Cur = Placer.FarmStats and Placer.FarmStats[UnitId]
+	end
 	if Cur == nil then
 		Cur = tonumber((StatsAt(UnitId, Level) or {}).farm_amount) or 0
 	end
@@ -4994,7 +5046,7 @@ local function UpgradeScore(Model, UnitId, Level, Cost)
 		Score = (Farm and 1000 or 0) - Level * PlaceConfig.UpgradeSpreadWeight
 	else
 		if Farm then
-			local Roi = FarmRoi(UnitId, Level, Cost)
+			local Roi = FarmRoi(UnitId, Level, Cost, Model)
 			if Wave <= PlaceConfig.FarmUpgradeUntilWave and Roi.payback <= Roi.remaining then
 				Score = Roi.value * PlaceConfig.FarmUpgradeWeight
 			else
@@ -5417,6 +5469,9 @@ local function ResetForNewMatch(Reason, KeepScan)
 	Placer.LastAttempt = {}
 	Placer.UpgradeFail = {}
 	Placer.UpgradeAt = setmetatable({}, { __mode = "k" })
+	Placer.Pending = {}
+	Placer.TargetSince = nil
+	Placer.TargetFailAt = nil
 	Placer.UnitCounts = {}
 	Placer.UnitRanges = {}
 	Placer.FarmStats = {}
@@ -5451,6 +5506,137 @@ end
 -- cost of WAITING (the target's damage is delayed) against the value of
 -- spending on something cheaper now (that purchase pays immediately, but the
 -- target is pushed back by cost / income seconds).
+
+-- Action queue ------------------------------------------------------------
+-- The queue is rebuilt every tick from live state and holds places AND upgrades
+-- in priority order. An entry is only a request: cost, level, money and the
+-- spot are all re-read at the moment it runs, so a stale queue can never
+-- spend money that is no longer there. A rejected entry is retried straight
+-- away, but at the very end of the queue and only once.
+Placer.Pending = {} -- spends the server took that the balance has not shown yet
+
+-- Money after subtracting spends that have not replicated yet. The balance
+-- value lags the server for a moment, so reading it raw right after a purchase
+-- shows money that is already gone and the next action gets rejected.
+function Placer.Money()
+	local Raw = GetMoney()
+	if Raw == nil then
+		return nil
+	end
+	local Pending = Placer.Pending
+	if not Pending then
+		Pending = {}
+		Placer.Pending = Pending
+	end
+	local Now = os.clock()
+	local Held = 0
+	for I = #Pending, 1, -1 do
+		local Spend = Pending[I]
+		-- reflected once the balance fell below what it was before the spend
+		if Now - Spend.At > PlaceConfig.PendingSeconds or Raw < Spend.Before then
+			table.remove(Pending, I)
+		else
+			Held += Spend.Cost
+		end
+	end
+	return Raw - Held
+end
+
+function Placer.CanSpend(Cost)
+	local Money = Placer.Money()
+	return Money ~= nil and Money >= Cost
+end
+
+-- Before = Placer.Money() read just before the action
+function Placer.Reserve(Cost, Before)
+	local Pending = Placer.Pending
+	if not Pending then
+		Pending = {}
+		Placer.Pending = Pending
+	end
+	Pending[#Pending + 1] = { Cost = Cost, Before = Before or Placer.Money() or 0, At = os.clock() }
+end
+
+-- copies of one unit we are willing to place (farms have their own cap)
+function Placer.PlaceCap(UnitId)
+	local Cap = SpawnCap(UnitId)
+	if IsFarmUnit(UnitId) then
+		Cap = math.min(Cap, tonumber(PlaceConfig.FarmCopies) or Cap)
+	end
+	return Cap
+end
+
+-- the best free spot for a unit right now (nil when there is none)
+function Placer.Resolve(UnitId)
+	local Pool, Farm = NodesFor(UnitId)
+	local Node, Reaches = PickNode(Pool, UnitId, Farm)
+	if not Node then
+		return nil
+	end
+	local Cf = Node.CFrame
+	if Placer.Grid and Placer.Grid.get_closest_grid_point then
+		local Ok, Snapped = pcall(Placer.Grid.get_closest_grid_point, Cf)
+		if Ok and typeof(Snapped) == "CFrame" then
+			Cf = Snapped
+		end
+	end
+	local Landing = Placer.NearestNode(Cf.Position)
+	if Landing and Placer.NodeBusy(Landing) then
+		return nil
+	end
+	return { Node = Node, Reaches = Reaches, Cf = Cf, Landing = Landing, Farm = Farm }
+end
+
+-- merge places and upgrades into one ordered queue
+--   early waves / roster not full: places first, then upgrades (farms ahead of
+--   combat inside each group); otherwise upgrades first.
+function Placer.BuildItems(Places, Upgrades)
+	Places = Places or {}
+	Upgrades = Upgrades or {}
+	local PlaceFirst = (GetWave() or 1) <= PlaceConfig.EarlyPlaceWaves or PlaceConfig.PlaceFirstUntilFull
+		or (Placer.Target ~= nil and Placer.Target.Kind == "place")
+	table.sort(Places, function(A, B)
+		if A.Reaches ~= B.Reaches then
+			return A.Reaches == true
+		end
+		if A.Score ~= B.Score then
+			return A.Score > B.Score
+		end
+		return tostring(A.Uuid) < tostring(B.Uuid)
+	end)
+	local FarmPlaces, CombatPlaces, FarmUps, CombatUps = {}, {}, {}, {}
+	for _, Entry in ipairs(Places) do
+		if Entry.Farm then
+			FarmPlaces[#FarmPlaces + 1] = Entry
+		else
+			CombatPlaces[#CombatPlaces + 1] = Entry
+		end
+	end
+	for _, Entry in ipairs(Upgrades) do
+		if IsFarmUnit(Entry.UnitId) then
+			FarmUps[#FarmUps + 1] = Entry
+		else
+			CombatUps[#CombatUps + 1] = Entry
+		end
+	end
+	local Order
+	if PlaceFirst then
+		Order = { FarmPlaces, CombatPlaces, FarmUps, CombatUps }
+	else
+		Order = { FarmUps, CombatUps, FarmPlaces, CombatPlaces }
+	end
+	local Items = {}
+	for _, Tier in ipairs(Order) do
+		for _, Entry in ipairs(Tier) do
+			Items[#Items + 1] = Entry
+		end
+	end
+	local Max = math.max(1, tonumber(PlaceConfig.QueueSize) or 20)
+	while #Items > Max do
+		table.remove(Items)
+	end
+	return Items
+end
 
 -- measured income: money gained between ticks (spending is marked out, so only
 -- real gains are counted), averaged over a sliding window
@@ -5553,7 +5739,7 @@ end
 -- upgrade loses to a fresh high-DPS placement when that is the better buy.
 -- Effective DPS counts only what can actually reach the lane.
 function Placer.ChooseTarget(TopPlace, Upgrades)
-	local Money = GetMoney() or 0
+	local Money = Placer.Money() or 0
 	local Income = Placer.IncomeRate()
 	local Horizon = Placer.PlanHorizon()
 
@@ -5568,8 +5754,12 @@ function Placer.ChooseTarget(TopPlace, Upgrades)
 	end
 
 	local UpgradeTarget
+	local SeenUnit = {}
 	for _, Entry in ipairs(Upgrades) do
-		if not IsFarmUnit(Entry.UnitId) and Entry.EffGain > 0 then
+		-- copies of one unit are listed lowest level first: only the first one
+		-- competes, otherwise the highest-level copy always wins and the rest never get upgraded
+		if not IsFarmUnit(Entry.UnitId) and Entry.EffGain > 0 and not SeenUnit[Entry.UnitId] then
+			SeenUnit[Entry.UnitId] = true
 			local Value = ActionValue(Entry.EffGain, Entry.Cost, Horizon, Money, Income)
 			if not UpgradeTarget or Value > UpgradeTarget.Value then
 				UpgradeTarget = {
@@ -5591,6 +5781,9 @@ function Placer.ChooseTarget(TopPlace, Upgrades)
 
 	if Chosen then
 		local Key = Chosen.Kind .. ":" .. tostring(Chosen.UnitId)
+		if not Placer.TargetSince or Key ~= Placer.LastTargetKey then
+			Placer.TargetSince = os.clock()
+		end
 		if Key ~= Placer.LastTargetKey then
 			Placer.LastTargetKey = Key
 			local Other = Chosen == PlaceTarget and UpgradeTarget or PlaceTarget
@@ -5616,6 +5809,7 @@ end
 function Placer.ClearTarget(Kind, Ref)
 	if Placer.IsTarget(Kind, Ref) then
 		Placer.Target = nil
+		Placer.TargetSince = nil
 	end
 end
 
@@ -5633,7 +5827,15 @@ function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
 	if IsFarmUnit(UnitId) and Kind == "place" then
 		return true
 	end
-	local Money = GetMoney() or 0
+	-- a target that has been saved for too long, or whose purchase keeps failing
+	-- (no valid spot, server rejects it), stops holding every other spend
+	if Placer.TargetSince and os.clock() - Placer.TargetSince > PlaceConfig.MaxWaitSeconds * 2 then
+		return true
+	end
+	if Target.Kind == "place" and os.clock() - (Placer.TargetFailAt or -100) < 8 then
+		return true
+	end
+	local Money = Placer.Money() or 0
 	local Income = Placer.IncomeRate()
 	local function Hold(Why)
 		if os.clock() - Placer.LastWaitLog > 5 then
@@ -5666,7 +5868,7 @@ function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
 		-- economy purchase: fine if it pays itself back well inside the horizon
 		local PaybackSeconds
 		if Kind == "upgrade" then
-			PaybackSeconds = FarmRoi(UnitId, Ref.Level, Cost).payback * Placer.SecondsPerWave()
+			PaybackSeconds = FarmRoi(UnitId, Ref.Level, Cost, Ref.Model).payback * Placer.SecondsPerWave()
 		else
 			local PerWave = tonumber((StatsAt(UnitId, 0) or {}).farm_amount) or 0
 			PaybackSeconds = PerWave > 0 and Cost / PerWave * Placer.SecondsPerWave() or math.huge
@@ -5683,7 +5885,6 @@ function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
 end
 
 local function ComputePlaceCandidate()
-	local Now = os.clock()
 	RefreshUnitRanges()
 	local Counts = {}
 	for _, Model in ipairs(PlayerUnitModels()) do
@@ -5693,73 +5894,57 @@ local function ComputePlaceCandidate()
 		end
 	end
 	Placer.UnitCounts = Counts
-	-- Count combat vs farm units to enforce "first defenders, then farms".
+	-- Count combat units to enforce "first defenders, then farms".
 	local CombatCount = 0
 	for Id, Count in pairs(Counts) do
 		if not IsFarmUnit(Id) then
 			CombatCount = CombatCount + Count
 		end
 	end
-	local FarmCount = 0
-	for Id, Count in pairs(Counts) do
-		if IsFarmUnit(Id) then
-			FarmCount = FarmCount + Count
-		end
-	end
 	local MinCombat = math.clamp(#GetPvePaths() + 2,
 		PlaceConfig.MinCombatBeforeFarms, PlaceConfig.MaxCombatBeforeFarms)
-	-- Farms go down after the first combat units and up to the quota, even if
-	-- defense currently reads WEAK — otherwise they never get placed at all.
-	local FarmsAllowed = CombatCount >= MinCombat and FarmCount < PlaceConfig.FarmQuota
+	-- Farms go down after the first combat units, even if defense currently
+	-- reads WEAK, otherwise they never get placed at all.
+	local FarmsAllowed = CombatCount >= MinCombat
 	local BestFarm, BestCombat, TopCombat
+	local All = {}
 	for _, Uuid in ipairs(EquippedUuids()) do
 		local UnitId = UnitIdForUuid(Uuid)
-		if UnitId and Units[UnitId] and (not IsFarmUnit(UnitId) or FarmsAllowed) then
-			local CanRetry = Now - (Placer.LastAttempt[Uuid] or 0) > PlaceConfig.RetryEvery
-			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry then
-				local Affordable = CanAfford(UnitCost(UnitId))
-				local Pool, Farm = NodesFor(UnitId)
-				local Node, Reaches = PickNode(Pool, UnitId, Farm)
-				if Node then
-					local Cf = Node.CFrame
-					if Placer.Grid and Placer.Grid.get_closest_grid_point then
-						local Ok, Snapped = pcall(Placer.Grid.get_closest_grid_point, Cf)
-						if Ok and typeof(Snapped) == "CFrame" then
-							Cf = Snapped
-						end
+		if UnitId and Units[UnitId] and (not IsFarmUnit(UnitId) or FarmsAllowed)
+			and (Counts[UnitId] or 0) < Placer.PlaceCap(UnitId) then
+			local Spot = Placer.Resolve(UnitId)
+			if Spot then
+				local Farm = Spot.Farm
+				local Score = UnitPlaceScore(UnitId) + NodeFitScore(Spot.Node, UnitId, Farm)
+				local Cost = UnitCost(UnitId)
+				local Entry = {
+					Kind = "place", Id = Uuid, Uuid = Uuid, UnitId = UnitId, Farm = Farm,
+					Node = Spot.Node, Cf = Spot.Cf, Landing = Spot.Landing, Score = Score,
+					Reaches = Spot.Reaches, Cost = Cost, Affordable = Placer.CanSpend(Cost),
+				}
+				All[#All + 1] = Entry
+				if Farm then
+					if Entry.Affordable and (not BestFarm or Score > BestFarm.Score) then
+						BestFarm = Entry
 					end
-					local Landing = Placer.NearestNode(Cf.Position)
-					if not (Landing and Placer.NodeBusy(Landing)) then
-						local Score = UnitPlaceScore(UnitId) + NodeFitScore(Node, UnitId, Farm)
-						local Entry = {
-							Uuid = Uuid, UnitId = UnitId, Node = Node,
-							Cf = Cf, Landing = Landing, Score = Score,
-							Reaches = Reaches, Affordable = Affordable,
-						}
-						if Farm then
-							if Affordable and (not BestFarm or Score > BestFarm.Score) then
-								BestFarm = Entry
-							end
-						else
-							-- a unit that reaches the lane always beats one that doesn't
-							local function Better(Current)
-								return not Current or (Entry.Reaches and not Current.Reaches)
-									or (Entry.Reaches == Current.Reaches and Score > Current.Score)
-							end
-							if Affordable and Better(BestCombat) then
-								BestCombat = Entry
-							end
-							if Better(TopCombat) then
-								TopCombat = Entry -- best combat placement regardless of money
-							end
-						end
+				else
+					-- a unit that reaches the lane always beats one that doesn't
+					local function Better(Current)
+						return not Current or (Entry.Reaches and not Current.Reaches)
+							or (Entry.Reaches == Current.Reaches and Score > Current.Score)
+					end
+					if Entry.Affordable and Better(BestCombat) then
+						BestCombat = Entry
+					end
+					if Better(TopCombat) then
+						TopCombat = Entry -- best combat placement regardless of money
 					end
 				end
 			end
 		end
 	end
 	-- An unlocked farm compounds for the rest of the match, then plain combat.
-	return (FarmsAllowed and BestFarm) or BestCombat, TopCombat
+	return (FarmsAllowed and BestFarm) or BestCombat, TopCombat, All
 end
 
 local function UpgradeCandidates()
@@ -5771,7 +5956,7 @@ local function UpgradeCandidates()
 		local MaxLevel = StatValue(Model, "max_upgrade")
 		if UnitId and Level ~= nil and (MaxLevel == nil or Level < MaxLevel) then
 			local Cost = NextUpgradeCost(UnitId, Level)
-			if Cost ~= nil and Now - (Placer.UpgradeFail[Model] or 0) >= PlaceConfig.UpgradeRetry then
+			if Cost ~= nil then
 				-- money is NOT filtered here: the top entry may be the thing we
 				-- are saving for. Callers check affordability when they spend.
 				local Gain = DpsOf(StatsAt(UnitId, Level + 1)) - DpsOf(StatsAt(UnitId, Level))
@@ -5786,19 +5971,54 @@ local function UpgradeCandidates()
 					end
 				end
 				List[#List + 1] = {
+					Index = #List + 1, Kind = "upgrade", Id = Model,
 					Model = Model, UnitId = UnitId, Level = Level,
 					Cost = Cost, Score = UpgradeScore(Model, UnitId, Level, Cost),
 					Position = UnitAnchorPosition(Model),
 					Gain = Gain, EffGain = EffGain,
-					Affordable = CanAfford(Cost),
+					Affordable = Placer.CanSpend(Cost),
 				}
 			end
 		end
 	end
 	table.sort(List, function(A, B)
-		return A.Score > B.Score
+		local SA, SB = A.Score, B.Score
+		if SA ~= SA then SA = -math.huge end -- NaN guard: a bad score must not break the sort
+		if SB ~= SB then SB = -math.huge end
+		if SA ~= SB then
+			return SA > SB
+		end
+		return A.Index < B.Index
 	end)
-	return List
+	-- The score decides which UNIT goes first; the copies of one unit are then
+	-- handed those slots lowest level first, so every copy gets upgraded in turn
+	-- instead of the best one snowballing while the others sit at level 0.
+	local Groups = {}
+	for _, Entry in ipairs(List) do
+		local Group = Groups[Entry.UnitId]
+		if not Group then
+			Group = { Entries = {}, Cursor = 0 }
+			Groups[Entry.UnitId] = Group
+		end
+		Group.Entries[#Group.Entries + 1] = Entry
+	end
+	for _, Group in pairs(Groups) do
+		if #Group.Entries > 1 then
+			table.sort(Group.Entries, function(A, B)
+				if A.Level ~= B.Level then
+					return A.Level < B.Level
+				end
+				return A.Index < B.Index
+			end)
+		end
+	end
+	local Ordered = {}
+	for _, Entry in ipairs(List) do
+		local Group = Groups[Entry.UnitId]
+		Group.Cursor += 1
+		Ordered[#Ordered + 1] = Group.Entries[Group.Cursor]
+	end
+	return Ordered
 end
 
 local function ComputeQueue()
@@ -5814,10 +6034,13 @@ local function ComputeQueue()
 		local EI = Placer.EnemyInfo
 		Log("enemies: alive=%d effHP=%.0f", EI.count, EI.totalHP)
 	end
-	local Place, TopPlace = ComputePlaceCandidate()
+	local Place, TopPlace, Places = ComputePlaceCandidate()
 	local Upgrades = UpgradeCandidates()
 	Placer.Target = Placer.ChooseTarget(TopPlace, Upgrades)
-	Placer.Queue = { Place = Place, Upgrade = Upgrades[1], Upgrades = Upgrades }
+	Placer.Queue = {
+		Place = Place, Upgrade = Upgrades[1], Upgrades = Upgrades,
+		Items = Placer.BuildItems(Places, Upgrades),
+	}
 	if PlaceConfig.ShowVisuals and PlaceConfig.ShowQueueArrows then
 		SetIntentArrow("place", Place and Place.Cf.Position or nil)
 		SetIntentArrow("upgrade", Upgrades[1] and Upgrades[1].Position or nil)
@@ -5884,16 +6107,6 @@ function Placer.PlaceOnce(Candidate)
 	return true
 end
 
-local function TryPlace(Candidate)
-	for _ = 1, math.max(1, tonumber(PlaceConfig.PlaceRetries) or 1) do
-		local Placed, Reason = Placer.PlaceOnce(Candidate)
-		if Reason ~= "occupied" then
-			return Placed, Reason
-		end
-	end
-	return false, "nonode"
-end
-
 -- (re)scan until nodes exist: the path cache can still be empty right when a
 -- match starts, and a failed run of placements also triggers a fresh scan
 local function EnsureScan()
@@ -5925,67 +6138,120 @@ local function EnsureScan()
 	end
 end
 
-local function RunUpgrades()
-	-- same invocation as auto_place.lua: direct pcall around the endpoint,
-	-- not the CallWithTimeout task.spawn wrapper. Recompute the candidates here
-	-- so upgrades never depend on the placement queue being built first.
-	local Now = os.clock()
-	local Candidates = UpgradeCandidates()
-	-- Farms first: every farm COPY must be upgraded in turn, not just the one
-	-- that happens to score highest. Combat upgrades fill the remaining slots.
-	local Farms, Combat, ToTry = {}, {}, {}
-	for _, Target in ipairs(Candidates) do
-		if IsFarmUnit(Target.UnitId) then
-			Farms[#Farms + 1] = Target
-		else
-			Combat[#Combat + 1] = Target
+local function RunQueue()
+	local Queue = Placer.Queue and Placer.Queue.Items or {}
+
+	-- A rejected entry moves straight on: it is put at the very end of the
+	-- queue and retried once there. A second rejection drops it for this tick.
+	local function Requeue(Item)
+		if not Item.Retried then
+			Item.Retried = true
+			Queue[#Queue + 1] = Item
 		end
 	end
-	for _, Target in ipairs(Farms) do
-		ToTry[#ToTry + 1] = Target
-	end
-	for _, Target in ipairs(Combat) do
-		ToTry[#ToTry + 1] = Target
-	end
-	local Limit = math.max(1, tonumber(PlaceConfig.UpgradesPerTick) or 1) + #Farms
-	local Attempted = 0
-	for _, Target in ipairs(ToTry) do
-		if Attempted >= Limit then
+
+	local MaxDone = math.max(1, tonumber(PlaceConfig.ActionsPerTick) or 1)
+	local MaxTries = MaxDone + math.max(0, tonumber(PlaceConfig.ExtraTries) or 0)
+	local Done, Tries, Held, Short = 0, 0, 0, 0
+	for _, Item in ipairs(Queue) do
+		if Done >= MaxDone or Tries >= MaxTries then
 			break
 		end
-		local Model = Target.Model
-		-- farm upgrades pay for themselves: never hold them behind a saved
-		-- combat target, so every farm copy gets upgraded in turn
-		local AllowFarm = IsFarmUnit(Target.UnitId)
-			or Placer.AllowSpend("upgrade", Target, Target.UnitId, Target.Cost, Target.EffGain)
-		if Model and Model.Parent and CanAfford(Target.Cost)
-			and Now - (Placer.UpgradeFail[Model] or 0) >= PlaceConfig.UpgradeRetry
-			and AllowFarm then
-			Attempted += 1
-			local Ok, Result = pcall(function()
-				return InvokeServer("upgrade_unit_ingame", Model)
-			end)
-			-- the endpoint frequently returns nil on a successful upgrade —
-			-- only an explicit false means the server rejected it
-			if Ok and Result ~= false then
-				Placer.UpgradeFail[Model] = nil
-				Placer.UpgradeAt[Model] = os.clock()
-				Placer.ClearTarget("upgrade", Target)
-				Log("upgraded %s to lvl %s", tostring(Target.UnitId), tostring(Target.Level + 1))
-				task.wait(PlaceConfig.ActionDelay)
+		if Item.Kind == "upgrade" then
+			-- level and cost are read NOW, not taken from when the queue was built
+			local Model = Item.Model
+			local Alive = Model ~= nil and Model.Parent ~= nil
+			local Level = Alive and tonumber(StatValue(Model, "upgrade")) or nil
+			local MaxLevel = Alive and StatValue(Model, "max_upgrade") or nil
+			local Cost = Level ~= nil and NextUpgradeCost(Item.UnitId, Level) or nil
+			if Cost ~= nil and (MaxLevel == nil or Level < MaxLevel) then
+				if not Placer.CanSpend(Cost) then
+					Short += 1
+				elseif not (IsFarmUnit(Item.UnitId)
+					or Placer.AllowSpend("upgrade", Item, Item.UnitId, Cost, Item.EffGain)) then
+					Held += 1 -- farm upgrades pay for themselves and are never held
+				else
+					Tries += 1
+					local Before = Placer.Money()
+					local Ok, Result = pcall(function()
+						return InvokeServer("upgrade_unit_ingame", Model)
+					end)
+					if not Ok or Result == false then
+						Requeue(Item)
+						if os.clock() - Placer.LastUpgradeWarn > 10 then
+							Placer.LastUpgradeWarn = os.clock()
+							Log("upgrade rejected: %s lvl %s cost %.0f money %s (ok=%s res=%s)",
+								tostring(Item.UnitId), tostring(Level), Cost, tostring(Before),
+								tostring(Ok), tostring(Result))
+						end
+					else
+						-- the endpoint often returns nil on success: confirm by the level itself
+						local Deadline = os.clock() + 0.5
+						local Confirmed = false
+						repeat
+							task.wait(0.05)
+							local Now = tonumber(StatValue(Model, "upgrade"))
+							Confirmed = Now ~= nil and Now > Level
+						until Confirmed or os.clock() >= Deadline or not Model.Parent
+						if Confirmed then
+							Placer.Reserve(Cost, Before)
+							Placer.UpgradeAt[Model] = os.clock()
+							Placer.ClearTarget("upgrade", Item)
+							Done += 1
+							Log("upgraded %s to lvl %s", tostring(Item.UnitId), tostring(Level + 1))
+							task.wait(PlaceConfig.ActionDelay)
+						elseif Model.Parent then
+							Placer.Reserve(Cost, Before) -- accepted: the spend may still land
+						end
+					end
+				end
+			end
+		else
+			-- placement: the spot and the money are resolved NOW
+			local UnitId = Item.UnitId
+			local Cost = UnitCost(UnitId)
+			if (Placer.UnitCounts[UnitId] or 0) >= Placer.PlaceCap(UnitId) then
+				Short += 0 -- full: an earlier entry this tick used the last slot
+			elseif not Placer.CanSpend(Cost) then
+				Short += 1
+			elseif not IsFarmUnit(UnitId)
+				and not Placer.AllowSpend("place", Item, UnitId, Cost, PlaceGain(UnitId)) then
+				Held += 1
 			else
-				Placer.UpgradeFail[Model] = Now
-				if Now - Placer.LastUpgradeWarn > 10 then
-					Placer.LastUpgradeWarn = Now
-					Log("upgrade rejected: %s lvl %s (ok=%s res=%s)",
-						tostring(Target.UnitId), tostring(Target.Level), tostring(Ok), tostring(Result))
+				Placer.RefreshOccupied()
+				local Spot = Placer.Resolve(UnitId)
+				if Spot then
+					Item.Node, Item.Cf, Item.Landing, Item.Reaches = Spot.Node, Spot.Cf, Spot.Landing, Spot.Reaches
+					Tries += 1
+					local Before = Placer.Money()
+					local Placed, Reason = Placer.PlaceOnce(Item)
+					if Placed then
+						Placer.Reserve(Cost, Before)
+						Placer.UnitCounts[UnitId] = (Placer.UnitCounts[UnitId] or 0) + 1
+						Placer.ClearTarget("place", Item)
+						Placer.Fails = 0
+						Done += 1
+						task.wait(PlaceConfig.ActionDelay)
+					elseif Reason == "server" or Reason == "blocked" then
+						Placer.Fails = Placer.Fails + 1
+						Placer.TargetFailAt = os.clock() -- stop saving for something that will not place
+						Requeue(Item)
+					end
 				end
 			end
 		end
 	end
-	if Now - Placer.LastUpgradeDiag > 10 then
-		Placer.LastUpgradeDiag = Now
-		Log("upgrade pass: %d candidates, %d attempted", #Candidates, Attempted)
+
+	if os.clock() - Placer.LastUpgradeDiag > 10 then
+		Placer.LastUpgradeDiag = os.clock()
+		local Parts = {}
+		for I = 1, math.min(#Queue, 8) do
+			local Item = Queue[I]
+			Parts[#Parts + 1] = ("%s%s%s $%.0f"):format(Item.Kind == "place" and "+" or "^",
+				tostring(Item.UnitId), Item.Retried and "!" or "", Item.Cost or 0)
+		end
+		Log("queue %d: %s | done %d tried %d held %d short %d | money %s",
+			#Queue, table.concat(Parts, " "), Done, Tries, Held, Short, tostring(Placer.Money()))
 	end
 end
 
@@ -6087,44 +6353,24 @@ local function PlacementTick()
 		Log("no equipped units found in the profile — nothing to place")
 	end
 
-	-- Build both sides of the queue first, then spend in wave-dependent order:
-	-- early waves build the roster (placement first), later waves compound
-	-- power (upgrades first). Both still require money rechecks at the endpoint.
-	ComputeQueue()
-	local Place = Placer.Queue.Place
-	local Wave = GetWave() or 1
-	local PlaceFirst = Wave <= PlaceConfig.EarlyPlaceWaves or PlaceConfig.PlaceFirstUntilFull
-		or (Placer.Target ~= nil and Placer.Target.Kind == "place")
-
-	local function SpendOnPlacement()
-		if not Place then
-			return
+	-- Rebuild the queue from live state, then walk it: every entry is
+	-- re-checked (money, level, spot) right before it runs.
+	local QueueOk, QueueErr = pcall(ComputeQueue)
+	if not QueueOk then
+		if os.clock() - (Placer.LastQueueWarn or 0) > 10 then
+			Placer.LastQueueWarn = os.clock()
+			warn("[AA Kaitun] queue error: " .. tostring(QueueErr))
 		end
-		-- farms are always allowed once the unlock gate passes
-		if not IsFarmUnit(Place.UnitId)
-			and not Placer.AllowSpend("place", Place, Place.UnitId, UnitCost(Place.UnitId), PlaceGain(Place.UnitId)) then
-			return -- saving for a higher-priority purchase
-		end
-		local Placed, Reason = TryPlace(Place)
-		if Placed then
-			Placer.ClearTarget("place", Place)
-			Placer.LastAttempt[Place.Uuid] = nil
-			Placer.Fails = 0
-			task.wait(PlaceConfig.ActionDelay)
-		else
-			Placer.LastAttempt[Place.Uuid] = os.clock()
-			if Reason ~= "nonode" and Reason ~= "nomoney" then
-				Placer.Fails = Placer.Fails + 1
-			end
-		end
+		-- scoring failed: still build a plain queue so nothing stops
+		pcall(function()
+			local Place, _, Places = ComputePlaceCandidate()
+			Placer.Queue = { Place = Place, Upgrades = {}, Items = Placer.BuildItems(Places, UpgradeCandidates()) }
+		end)
 	end
-
-	if PlaceFirst then
-		SpendOnPlacement()
-	end
-	RunUpgrades()
-	if not PlaceFirst then
-		SpendOnPlacement()
+	local RunOk, RunErr = pcall(RunQueue)
+	if not RunOk and os.clock() - (Placer.LastUpgradeErr or 0) > 10 then
+		Placer.LastUpgradeErr = os.clock()
+		warn("[AA Kaitun] queue run error: " .. tostring(RunErr))
 	end
 	Placer.MarkMoney()
 end
