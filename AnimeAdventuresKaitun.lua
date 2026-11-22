@@ -4106,12 +4106,53 @@ function Placer.RefreshOccupied()
 	end
 end
 
+-- is any unit model standing on this exact node? RefreshOccupied only retires
+-- the NEAREST node to each unit, so a unit between two nodes can leave the
+-- other one looking free — check the picked node directly before spawning
+function Placer.NodeBusy(Node)
+	local Limit = Config.NodeSpacing * Config.NodeSpacing
+	local Px, Pz = Node.Position.X, Node.Position.Z
+	local function Close(Model)
+		if Model and Model:IsA("Model") and Model:IsDescendantOf(workspace) then
+			local Ok, Pivot = pcall(function()
+				return Model:GetPivot()
+			end)
+			if Ok then
+				local Pos = Pivot.Position
+				local Dx, Dz = Pos.X - Px, Pos.Z - Pz
+				if Dx * Dx + Dz * Dz <= Limit then
+					return true
+				end
+			end
+		end
+		return false
+	end
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			if Close(Model) then
+				return true
+			end
+		end
+	end
+	for _, Model in ipairs(CollectionService:GetTagged("player_units")) do
+		if Close(Model) then
+			return true
+		end
+	end
+	return false
+end
+
 function Placer.PlaceOnce(Uuid, UnitId)
 	Placer.RefreshOccupied()
 	local Pool, Farm = NodesFor(UnitId)
 	local Node = PickNode(Pool, Farm)
 	if not Node then
 		return false, "nonode"
+	end
+	if Placer.NodeBusy(Node) then
+		Placer.Retire(Node)
+		return false, "occupied"
 	end
 	local Cf = Node.CFrame
 	if Placer.Grid and Placer.Grid.get_closest_grid_point then
@@ -4122,7 +4163,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 	end
 	-- the grid snap can land on a node that already has a unit
 	local Landing = Placer.NearestNode(Cf.Position)
-	if Landing and Landing ~= Node and Placer.Used[Landing] then
+	if Landing and (Placer.Used[Landing] or Placer.NodeBusy(Landing)) then
 		Placer.Retire(Node)
 		return false, "occupied"
 	end
