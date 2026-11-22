@@ -1148,7 +1148,7 @@ local function StartStatsOverlay()
 	Gui.Name = "AAKaitunStats"
 	Gui.ResetOnSpawn = false
 	Gui.IgnoreGuiInset = true
-	Gui.DisplayOrder = 1000
+	Gui.DisplayOrder = 9999
 	Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	Gui.Parent = Holder
 
@@ -1573,7 +1573,7 @@ local function StartStatsOverlay()
 	ToggleGui.Name = "AAKaitunToggle"
 	ToggleGui.ResetOnSpawn = false
 	ToggleGui.IgnoreGuiInset = true
-	ToggleGui.DisplayOrder = 1001
+	ToggleGui.DisplayOrder = 9999
 	ToggleGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	ToggleGui.Parent = Holder
 
@@ -3202,7 +3202,7 @@ local function StartLobbyWidget()
 	Gui.Name = "AAKaitunLobby"
 	Gui.ResetOnSpawn = false
 	Gui.IgnoreGuiInset = true
-	Gui.DisplayOrder = 1000
+	Gui.DisplayOrder = 9999
 	Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	Gui.Parent = PlayerGui
 
