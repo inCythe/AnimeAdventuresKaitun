@@ -5614,6 +5614,12 @@ function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
 	if not PlaceConfig.WaitEnabled or not Target or Placer.IsTarget(Kind, Ref) then
 		return true
 	end
+	-- Farm PLACEMENT is the economy engine: once unlocked and affordable it is
+	-- never worth delaying for a combat target. Only farm upgrades are checked
+	-- against the payback horizon below.
+	if IsFarmUnit(UnitId) and Kind == "place" then
+		return true
+	end
 	local Money = GetMoney() or 0
 	local Income = Placer.IncomeRate()
 	local function Hold(Why)
@@ -5652,7 +5658,7 @@ function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
 			local PerWave = tonumber((StatsAt(UnitId, 0) or {}).farm_amount) or 0
 			PaybackSeconds = PerWave > 0 and Cost / PerWave * Placer.SecondsPerWave() or math.huge
 		end
-		if PaybackSeconds <= Horizon * PlaceConfig.FarmSpendPaybackFactor then
+		if PaybackSeconds <= Horizon then
 			return true
 		end
 		return Hold(("farm payback %.0fs is too slow"):format(PaybackSeconds))
@@ -6081,7 +6087,9 @@ local function PlacementTick()
 		if not Place then
 			return
 		end
-		if not Placer.AllowSpend("place", Place, Place.UnitId, UnitCost(Place.UnitId), PlaceGain(Place.UnitId)) then
+		-- farms are always allowed once the unlock gate passes
+		if not IsFarmUnit(Place.UnitId)
+			and not Placer.AllowSpend("place", Place, Place.UnitId, UnitCost(Place.UnitId), PlaceGain(Place.UnitId)) then
 			return -- saving for a higher-priority purchase
 		end
 		local Placed, Reason = TryPlace(Place)
