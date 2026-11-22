@@ -1002,9 +1002,20 @@ end
 -- webhook reports ----------------------------------------------------------
 local RequestFn = (syn and syn.request) or http_request or request or (http and http.request)
 
-local function SendWebhook(Title, Description, Color)
+-- Keyed reports fire at most once per goal, even across teleports/loader re-runs
+-- (the state file can fail to save, so keep an executor-wide ledger too).
+local WebhookSent = Env.AAKaitunWebhookSent or {}
+Env.AAKaitunWebhookSent = WebhookSent
+
+local function SendWebhook(Title, Description, Color, Key)
 	if Config.WebhookUrl == "" or Config.WebhookMode == "none" or not RequestFn then
 		return
+	end
+	if Key then
+		if WebhookSent[Key] then
+			return
+		end
+		WebhookSent[Key] = true
 	end
 	-- exact profile paths (verified with check_inventory.lua)
 	local Prof = Profile()
@@ -1117,7 +1128,8 @@ local function StartMilestoneWatcher()
 						State.Reported[Milestone.Key] = os.time()
 						SaveState()
 						Log("milestone: %s", Milestone.Title)
-						SendWebhook(Milestone.Title, Milestone.Text, Milestone.Color)
+						SendWebhook(Milestone.Title, Milestone.Text, Milestone.Color,
+							"goal:" .. tostring(Milestone.Key))
 					end
 				end
 			end
@@ -2542,7 +2554,8 @@ local function HuntUnit()
 				table.sort(Names)
 				local Drops = #Names > 0 and (" Drops: " .. table.concat(Names, ", ") .. ".") or ""
 				SendWebhook("Hunted " .. UnitDisplayName(Target),
-					"Got " .. UnitDisplayName(Target) .. " after " .. Rolls .. " x10 rolls." .. Drops, 5763719)
+					"Got " .. UnitDisplayName(Target) .. " after " .. Rolls .. " x10 rolls." .. Drops,
+					5763719, "hunt:" .. tostring(Target))
 			end
 			return true
 		end
@@ -3091,7 +3104,7 @@ local function JoinChallenge(Def, Uuid)
 		pcall(LobbyServiceClient.cancel_selections)
 	end
 
-	State.Current = { Kind = Def.Mode, Mode = Def.Mode, Uuid = Uuid }
+	State.Current = { Kind = Def.Mode, Mode = Def.Mode, Uuid = Uuid, Token = HttpService:GenerateGUID(false) }
 	SaveState()
 
 	for Attempt = 1, Config.MatchmakingRetries do
@@ -3120,7 +3133,7 @@ local function JoinStoryLoop()
 		Log("no story stage found")
 		return false
 	end
-	State.Current = { Kind = "Story1", LevelId = Stage }
+	State.Current = { Kind = "Story1", LevelId = Stage, Token = HttpService:GenerateGUID(false) }
 	SaveState()
 	return JoinSolo(Stage, "Normal")
 end
@@ -3153,7 +3166,7 @@ local function JoinAct6()
 	local SkipWorld = Config.SkipStory and WorldId or nil
 	Log("story target: %s act %d/%d (%s)%s", WorldId, Act, Count, Target, SkipWorld and " [skipper]" or "")
 
-	State.Current = { Kind = "Act6", LevelId = Target }
+	State.Current = { Kind = "Act6", LevelId = Target, Token = HttpService:GenerateGUID(false) }
 	SaveState()
 	local Ok = JoinSolo(Target, "Normal", SkipWorld)
 	if Ok then
@@ -3166,7 +3179,7 @@ local function JoinAct6()
 		if not Cleared[Id] then
 			if Id ~= Target or SkipWorld then
 				Log("no skip -> playing first uncleared act %s", Id)
-				State.Current = { Kind = "Act6", LevelId = Id }
+				State.Current = { Kind = "Act6", LevelId = Id, Token = HttpService:GenerateGUID(false) }
 				SaveState()
 				return JoinSolo(Id, "Normal")
 			end
@@ -3182,7 +3195,7 @@ local function JoinInfiniteLoop()
 		Log("no infinite stage found, falling back to story")
 		return JoinStoryLoop()
 	end
-	State.Current = { Kind = "Infinite", LevelId = Id }
+	State.Current = { Kind = "Infinite", LevelId = Id, Token = HttpService:GenerateGUID(false) }
 	SaveState()
 	return JoinSolo(Id, "Hard")
 end
@@ -6241,7 +6254,8 @@ local function FinishMatch(Ctx)
 	local Decision = DecideAfterMatch(Ctx)
 	Log("match finished -> %s", Decision)
 	if Config.WebhookMode == "all" then
-		SendWebhook("Match finished (" .. tostring(Ctx.Kind) .. ")", "Decision: " .. Decision .. ".", 5793266)
+		SendWebhook("Match finished (" .. tostring(Ctx.Kind) .. ")",
+			"Decision: " .. Decision .. ".", 5793266, "match:" .. tostring(Ctx.Token or Ctx.Kind))
 	end
 
 	local function Transitioned()
@@ -6249,9 +6263,11 @@ local function FinishMatch(Ctx)
 	end
 
 	if Decision == "Replay" then
+		-- the vote is a one-shot toggle: firing it repeatedly makes the server
+		-- flip the vote back and forth. Send it once, then only wait.
+		pcall(FireEndpoint, "set_game_finished_vote", "replay")
 		local Deadline = os.clock() + 10
 		while os.clock() < Deadline and not Transitioned() do
-			pcall(FireEndpoint, "set_game_finished_vote", "replay")
 			task.wait(0.5)
 		end
 	end
