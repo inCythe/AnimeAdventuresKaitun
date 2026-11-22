@@ -4143,6 +4143,65 @@ function Placer.NodeBusy(Node)
 	return false
 end
 
+-- intent arrow: same billboard style as the scan center arrow, recolored per
+-- action — green = placing a unit, orange = upgrading one. Auto-hides.
+local IntentArrow = { Token = 0 }
+local IntentColors = {
+	place = Color3.fromRGB(80, 255, 140),
+	upgrade = Color3.fromRGB(255, 170, 60),
+}
+
+local function HideIntentArrow()
+	IntentArrow.Token = IntentArrow.Token + 1
+end
+
+local function ShowIntentArrow(Kind, Position)
+	HideIntentArrow()
+	local Token = IntentArrow.Token
+	local Color = IntentColors[Kind] or Color3.new(1, 1, 1)
+	local Anchor = Instance.new("Part")
+	Anchor.Name = "AA_IntentArrow"
+	Anchor.Anchored = true
+	Anchor.CanCollide = false
+	Anchor.CanQuery = false
+	Anchor.CanTouch = false
+	Anchor.CastShadow = false
+	Anchor.Transparency = 1
+	Anchor.Size = Vector3.new(1, 1, 1)
+	Anchor.CFrame = CFrame.new(Position + Vector3.new(0, 8, 0))
+	Anchor.Parent = workspace
+	local Billboard = Instance.new("BillboardGui")
+	Billboard.Size = UDim2.fromOffset(70, 70)
+	Billboard.AlwaysOnTop = true
+	Billboard.LightInfluence = 0
+	Billboard.MaxDistance = math.huge
+	Billboard.Parent = Anchor
+	local Glow = Instance.new("ImageLabel")
+	Glow.BackgroundTransparency = 1
+	Glow.Image = "rbxassetid://81351645241261"
+	Glow.ImageTransparency = 0.55
+	Glow.ImageColor3 = Color
+	Glow.AnchorPoint = Vector2.new(0.5, 0.5)
+	Glow.Position = UDim2.fromScale(0.5, 0.5)
+	Glow.Size = UDim2.fromScale(1, 1)
+	Glow.Parent = Billboard
+	local Arrow = Instance.new("ImageLabel")
+	Arrow.BackgroundTransparency = 1
+	Arrow.Image = "rbxassetid://81256616982657"
+	Arrow.ImageTransparency = 0.35
+	Arrow.ImageColor3 = Color
+	Arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+	Arrow.Position = UDim2.fromScale(0.5, 0.5)
+	Arrow.Size = UDim2.fromScale(0.31, 0.31)
+	Arrow.Rotation = 180
+	Arrow.Parent = Billboard
+	task.delay(1.5, function()
+		if IntentArrow.Token == Token then
+			Anchor:Destroy()
+		end
+	end)
+end
+
 function Placer.PlaceOnce(Uuid, UnitId)
 	Placer.RefreshOccupied()
 	local Pool, Farm = NodesFor(UnitId)
@@ -4168,6 +4227,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 		return false, "occupied"
 	end
 
+	ShowIntentArrow("place", Cf.Position)
 	local Before = #PlayerUnitModels()
 	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
 	if not (Ok and Result) then
@@ -4257,6 +4317,12 @@ local function RunUpgrades()
 						return
 					end
 					if Now - (Placer.UpgradeFail[Model] or 0) >= Config.UpgradeRetry then
+						local OkPivot, Pivot = pcall(function()
+							return Model:GetPivot()
+						end)
+						if OkPivot then
+							ShowIntentArrow("upgrade", Pivot.Position)
+						end
 						local Ok, Result = CallWithTimeout(10, InvokeServer, "upgrade_unit_ingame", Model)
 						if Ok and Result then
 							Placer.UpgradeFail[Model] = nil
