@@ -784,14 +784,9 @@ local function ApplyFpsBoost(Settings)
 		end
 
 		if Item:IsA("BasePart") then
-			local Transparent = Item.Transparency > 0
-				or Item.Material == Enum.Material.Glass
-				or Item.Material == Enum.Material.ForceField
-			if not Transparent then
-				SetCached(Item, "Material", Enum.Material.SmoothPlastic)
-				SetCached(Item, "MaterialVariant", "")
-				SetCached(Item, "Reflectance", 0)
-			end
+			SetCached(Item, "Material", Enum.Material.SmoothPlastic)
+			SetCached(Item, "MaterialVariant", "")
+			SetCached(Item, "Reflectance", 0)
 			if NoPartShadow then
 				SetCached(Item, "CastShadow", false)
 			end
