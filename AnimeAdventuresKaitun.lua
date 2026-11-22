@@ -41,6 +41,8 @@ if not game:IsLoaded() then
 	until game:IsLoaded()
 end
 
+task.wait(4)
+
 -- services ---------------------------------------------------------------
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
