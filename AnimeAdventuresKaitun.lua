@@ -3371,6 +3371,7 @@ local Placer = {
 	LastScan = 0,
 	LastWarn = 0,
 	ModelIds = setmetatable({}, { __mode = "k" }),
+	Occupied = {},
 	Core = nil,
 	Paths = nil,
 	Grid = nil,
@@ -4078,8 +4079,10 @@ function Placer.NearestNode(Position)
 	return Best
 end
 
--- every unit in the match (ours AND other players') retires the node under it
+-- every unit in the match (ours AND other players') retires the ONE node it
+-- is standing on. Occupied holds exactly those nodes — neighbors stay free.
 function Placer.RefreshOccupied()
+	Placer.Occupied = {}
 	local Seen = {}
 	local function Check(Model)
 		if Model and not Seen[Model] and Model:IsA("Model") and Model:IsDescendantOf(workspace) then
@@ -4089,8 +4092,11 @@ function Placer.RefreshOccupied()
 			end)
 			if Ok then
 				local Node = Placer.NearestNode(Pivot.Position)
-				if Node and not Placer.Used[Node] then
-					Placer.Retire(Node)
+				if Node then
+					Placer.Occupied[Node] = true
+					if not Placer.Used[Node] then
+						Placer.Retire(Node)
+					end
 				end
 			end
 		end
@@ -4106,58 +4112,29 @@ function Placer.RefreshOccupied()
 	end
 end
 
--- is any unit model standing on this exact node? RefreshOccupied only retires
--- the NEAREST node to each unit, so a unit between two nodes can leave the
--- other one looking free — check the picked node directly before spawning
+-- is this the node a unit is actually standing on? RefreshOccupied fills
+-- Occupied with each unit's single nearest node, so adjacent nodes stay free
 function Placer.NodeBusy(Node)
-	local Limit = Config.NodeSpacing * Config.NodeSpacing
-	local Px, Pz = Node.Position.X, Node.Position.Z
-	local function Close(Model)
-		if Model and Model:IsA("Model") and Model:IsDescendantOf(workspace) then
-			local Ok, Pivot = pcall(function()
-				return Model:GetPivot()
-			end)
-			if Ok then
-				local Pos = Pivot.Position
-				local Dx, Dz = Pos.X - Px, Pos.Z - Pz
-				if Dx * Dx + Dz * Dz <= Limit then
-					return true
-				end
-			end
-		end
-		return false
-	end
-	local Folder = workspace:FindFirstChild("_UNITS")
-	if Folder then
-		for _, Model in ipairs(Folder:GetChildren()) do
-			if Close(Model) then
-				return true
-			end
-		end
-	end
-	for _, Model in ipairs(CollectionService:GetTagged("player_units")) do
-		if Close(Model) then
-			return true
-		end
-	end
-	return false
+	return Placer.Occupied ~= nil and Placer.Occupied[Node] == true
 end
 
 -- intent arrow: same billboard style as the scan center arrow, recolored per
 -- action — green = placing a unit, orange = upgrading one. Auto-hides.
-local IntentArrow = { Token = 0 }
+local IntentArrow = { Anchor = nil }
 local IntentColors = {
 	place = Color3.fromRGB(80, 255, 140),
 	upgrade = Color3.fromRGB(255, 170, 60),
 }
 
 local function HideIntentArrow()
-	IntentArrow.Token = IntentArrow.Token + 1
+	if IntentArrow.Anchor then
+		IntentArrow.Anchor:Destroy()
+		IntentArrow.Anchor = nil
+	end
 end
 
 local function ShowIntentArrow(Kind, Position)
 	HideIntentArrow()
-	local Token = IntentArrow.Token
 	local Color = IntentColors[Kind] or Color3.new(1, 1, 1)
 	local Anchor = Instance.new("Part")
 	Anchor.Name = "AA_IntentArrow"
@@ -4195,11 +4172,7 @@ local function ShowIntentArrow(Kind, Position)
 	Arrow.Size = UDim2.fromScale(0.31, 0.31)
 	Arrow.Rotation = 180
 	Arrow.Parent = Billboard
-	task.delay(1.5, function()
-		if IntentArrow.Token == Token then
-			Anchor:Destroy()
-		end
-	end)
+	IntentArrow.Anchor = Anchor
 end
 
 function Placer.PlaceOnce(Uuid, UnitId)
@@ -4230,6 +4203,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 	ShowIntentArrow("place", Cf.Position)
 	local Before = #PlayerUnitModels()
 	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
+	HideIntentArrow()
 	if not (Ok and Result) then
 		-- a rejected spawn retires the node immediately: the next attempt
 		-- must land somewhere else, not hammer the same spot
@@ -4324,6 +4298,7 @@ local function RunUpgrades()
 							ShowIntentArrow("upgrade", Pivot.Position)
 						end
 						local Ok, Result = CallWithTimeout(10, InvokeServer, "upgrade_unit_ingame", Model)
+						HideIntentArrow()
 						if Ok and Result then
 							Placer.UpgradeFail[Model] = nil
 							task.wait(Config.ActionDelay)
@@ -4337,7 +4312,44 @@ local function RunUpgrades()
 	end
 end
 
+-- connection-based freshness: any unit model added/removed (ours, other
+-- players', summoned adds) refreshes occupancy immediately and queues a node
+-- rescan, instead of waiting for the next timed scan
+local WatchingUnits = false
+local LastUnitPoke = 0
+local function WatchUnits()
+	if WatchingUnits then
+		return
+	end
+	WatchingUnits = true
+	local function Poke()
+		local Now = os.clock()
+		if Now - LastUnitPoke < 0.5 then
+			return
+		end
+		LastUnitPoke = Now
+		Placer.NeedScan = true
+		pcall(Placer.RefreshOccupied)
+	end
+	local function HookFolder(Folder)
+		Folder.ChildAdded:Connect(Poke)
+		Folder.ChildRemoved:Connect(Poke)
+	end
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		HookFolder(Folder)
+	end
+	workspace.ChildAdded:Connect(function(Child)
+		if Child.Name == "_UNITS" then
+			HookFolder(Child)
+		end
+	end)
+	CollectionService:GetInstanceAddedSignal("player_units"):Connect(Poke)
+	CollectionService:GetInstanceRemovedSignal("player_units"):Connect(Poke)
+end
+
 local function PlacementTick()
+	WatchUnits()
 	EnsureScan()
 	if #Placer.Nodes == 0 then
 		return
