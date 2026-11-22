@@ -150,7 +150,7 @@ local Config = {
 	-- compass (CompassUnit = the pick AND the hunt target)
 	CompassId = "celestial_compass_u21",
 	CompassUnit = "elyssia",
-	Challenges = false,           -- join daily/normal challenges and leave matches for resets
+	Challenges = true,           -- join daily/normal challenges and leave matches for resets
 	ChallengesOnlyAfterCompass = true, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
 
 	-- group + favorite
