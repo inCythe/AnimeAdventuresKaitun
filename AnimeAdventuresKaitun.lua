@@ -3202,7 +3202,8 @@ local function StartLobbyWidget()
 	Gui.Name = "AAKaitunLobby"
 	Gui.ResetOnSpawn = false
 	Gui.IgnoreGuiInset = true
-	Gui.DisplayOrder = 900
+	Gui.DisplayOrder = 1000
+	Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	Gui.Parent = PlayerGui
 
 	local function New(Class, Props, Parent)
