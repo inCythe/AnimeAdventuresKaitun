@@ -4106,20 +4106,6 @@ function Placer.RefreshOccupied()
 	end
 end
 
--- returns Placed, Reason ("nonode"/"occupied"/"server"/"money")
-local function IsMoneyReject(Result)
-	if type(Result) ~= "string" then
-		return false
-	end
-	local S = Result:lower()
-	return S:find("money", 1, true) ~= nil
-		or S:find("yen", 1, true) ~= nil
-		or S:find("fund", 1, true) ~= nil
-		or S:find("enough", 1, true) ~= nil
-		or S:find("cost", 1, true) ~= nil
-		or S:find("gold", 1, true) ~= nil
-end
-
 function Placer.PlaceOnce(Uuid, UnitId)
 	Placer.RefreshOccupied()
 	local Pool, Farm, PreferPath = NodesFor(UnitId)
@@ -4143,13 +4129,7 @@ function Placer.PlaceOnce(Uuid, UnitId)
 
 	local Before = #PlayerUnitModels()
 	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
-	-- a string reply is an error message from the server, not a success
-	local Rejected = not Ok or Result == nil or Result == false or type(Result) == "string"
-	if Rejected then
-		if IsMoneyReject(Result) then
-			-- node is fine; we're just broke. Don't retire it.
-			return false, "money"
-		end
+	if not (Ok and Result) then
 		-- a rejected spawn retires the node immediately: the next attempt
 		-- must land somewhere else, not hammer the same spot
 		Node.Bad = true
@@ -4210,24 +4190,6 @@ local function EnsureScan()
 	end
 end
 
--- money is verified before every place/upgrade; Spent tracks what this tick
--- already committed so rapid-fire actions can't overspend before the
--- replicated resource value catches up. Unknown money = cannot afford.
-local Wallet = { Money = nil, Spent = 0, BrokeUntil = 0 }
-
-local function CanAfford(Cost)
-	if Wallet.Money == nil or os.clock() < Wallet.BrokeUntil then
-		return false
-	end
-	return Wallet.Money - Wallet.Spent >= Cost
-end
-
--- the server rejected a spend for money; stop ALL spending for a while so we
--- don't spam "not enough money" toasts every tick
-local function NoteMoneyReject()
-	Wallet.BrokeUntil = os.clock() + 20
-end
-
 local function RunUpgrades()
 	local Farm, Other, Buff = {}, {}, {}
 	for _, Model in ipairs(PlayerUnitModels()) do
@@ -4249,19 +4211,15 @@ local function RunUpgrades()
 			if UnitId and Level ~= nil and (MaxLevel == nil or Level < MaxLevel) then
 				local Cost = NextUpgradeCost(UnitId, Level)
 				if Cost ~= nil then
-					if not CanAfford(Cost) then
+					local Money = GetMoney()
+					if Money ~= nil and Money < Cost then
 						return
 					end
 					if Now - (Placer.UpgradeFail[Model] or 0) >= Config.UpgradeRetry then
 						local Ok, Result = CallWithTimeout(10, InvokeServer, "upgrade_unit_ingame", Model)
-						local Rejected = not Ok or Result == nil or Result == false or type(Result) == "string"
-						if not Rejected then
+						if Ok and Result then
 							Placer.UpgradeFail[Model] = nil
-							Wallet.Spent = Wallet.Spent + Cost
 							task.wait(Config.ActionDelay)
-						elseif IsMoneyReject(Result) then
-							NoteMoneyReject()
-							Placer.UpgradeFail[Model] = Now
 						else
 							Placer.UpgradeFail[Model] = Now
 						end
@@ -4278,8 +4236,6 @@ local function PlacementTick()
 		return
 	end
 	Placer.RefreshOccupied()
-	Wallet.Money = tonumber(GetMoney())
-	Wallet.Spent = 0
 	local Equipped = EquippedUuids()
 	if #Equipped == 0 and os.clock() - Placer.LastWarn > 15 then
 		Placer.LastWarn = os.clock()
@@ -4296,19 +4252,17 @@ local function PlacementTick()
 		local UnitId = UnitIdForUuid(Uuid)
 		if UnitId and Units[UnitId] then
 			local CanRetry = os.clock() - (Placer.LastAttempt[Uuid] or 0) > Config.RetryEvery
-			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry and CanAfford(UnitCost(UnitId)) then
+			local Money = GetMoney()
+			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry and (Money == nil or Money >= UnitCost(UnitId)) then
 				local Placed, Reason = TryPlace(Uuid, UnitId)
 				if Placed then
 					Counts[UnitId] = (Counts[UnitId] or 0) + 1
-					Wallet.Spent = Wallet.Spent + UnitCost(UnitId)
 					Placer.LastAttempt[Uuid] = nil
 					Placer.Fails = 0
 					task.wait(Config.ActionDelay)
 				else
 					Placer.LastAttempt[Uuid] = os.clock()
-					if Reason == "money" then
-						NoteMoneyReject()
-					elseif Reason ~= "nonode" then
+					if Reason ~= "nonode" then
 						Placer.Fails = Placer.Fails + 1
 					end
 				end
