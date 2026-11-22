@@ -1987,13 +1987,46 @@ local function CompassUsedOnServer()
 	return Scan(EndpointsClient.session)
 end
 
+-- The compass pick is confirmed by the actual summon GUI slot, not by the
+-- profile callback: SummonGUI.BannerFrames.EventClover.CelestialCompass.Slot
+-- containing celestial_compass_u21 means the compass has been used.
+local function CompassSlot()
+	local Gui = PlayerGui:FindFirstChild("SummonGUI")
+	local Frames = Gui and Gui:FindFirstChild("BannerFrames")
+	local Banner = Frames and (Frames:FindFirstChild(Config.SummonBanner)
+		or Frames:FindFirstChild("EventClover"))
+	local Compass = Banner and Banner:FindFirstChild("CelestialCompass")
+	return Compass and Compass:FindFirstChild("Slot") or nil
+end
+
+local function CompassUsedInGui()
+	local Slot = CompassSlot()
+	return Slot ~= nil and Slot:FindFirstChild(Config.CompassId) ~= nil
+end
+
+local function WaitForCompassGui(Timeout)
+	local Deadline = os.clock() + (Timeout or 6)
+	while os.clock() < Deadline do
+		if CompassUsedInGui() then
+			return true
+		end
+		task.wait(0.1)
+	end
+	return CompassUsedInGui()
+end
+
 -- Force = retry even if a previous attempt this session failed (used right
 -- before the first summon, which must never happen before the compass pick).
 local function UseCompass(Force)
-	if State.CompassDone then
+	-- the GUI slot is the source of truth
+	if CompassUsedInGui() then
+		if not State.CompassDone then
+			State.CompassDone = true
+			SaveState()
+		end
 		return true
 	end
-	if CompassUsedOnServer() or HasUnit(Config.CompassUnit) then
+	if HasUnit(Config.CompassUnit) then
 		State.CompassDone = true
 		SaveState()
 		return true
@@ -2017,19 +2050,18 @@ local function UseCompass(Force)
 	end
 	if type(Result) == "string" then
 		Log("compass replied: %s", Result)
-		if Result:lower():find("already", 1, true) then
-			State.CompassDone = true
-			SaveState()
-			return true
-		end
+	end
+	if Result == false then
 		return false
 	end
-	if Result ~= false then
+	-- only accept the pick once the slot actually appears in the GUI
+	if WaitForCompassGui(6) then
 		State.CompassDone = true
 		SaveState()
-		Log("compass used -> %s", Config.CompassUnit)
+		Log("compass used -> %s (slot verified)", Config.CompassUnit)
 		return true
 	end
+	Log("compass pick sent but the slot is not visible yet — will retry next lobby visit")
 	return false
 end
 
@@ -3324,11 +3356,30 @@ local function StartLobbyWidget()
 	Log("lobby widget on")
 end
 
+-- Lobby-only toggles: sent when the replicated setting is missing or wrong,
+-- and once per session for keys the game does not replicate.
+local LobbySettingsSent = {}
+local function ApplyLobbySettings()
+	local Folder = Player:FindFirstChild("_settings")
+	for Name, Want in pairs({ quick_summon = true, hide_other_pets = true }) do
+		local Flag = Folder and Folder:FindFirstChild(Name)
+		if Flag and Flag:IsA("BoolValue") then
+			if Flag.Value ~= Want then
+				CallWithTimeout(10, InvokeServer, "toggle_setting", Name, Want)
+			end
+		elseif not LobbySettingsSent[Name] then
+			LobbySettingsSent[Name] = true
+			CallWithTimeout(10, InvokeServer, "toggle_setting", Name, Want)
+		end
+	end
+end
+
 RunLobby = function()
 	Log("lobby mode")
 	if Config.StatsOverlay then
 		StartLobbyWidget()
 	end
+	ApplyLobbySettings()
 	GroupAndFavorite()
 	RedeemCodes()
 	UseCompass()
