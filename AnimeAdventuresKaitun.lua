@@ -787,6 +787,7 @@ local function ApplyFpsBoost(Settings)
 			SetCached(Item, "Material", Enum.Material.SmoothPlastic)
 			SetCached(Item, "MaterialVariant", "")
 			SetCached(Item, "Reflectance", 0)
+			SetCached(Item, "Color", Color3.new(1, 1, 1))
 			if NoPartShadow then
 				SetCached(Item, "CastShadow", false)
 			end
