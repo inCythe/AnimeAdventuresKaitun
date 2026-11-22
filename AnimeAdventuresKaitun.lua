@@ -221,7 +221,7 @@ local Config = {
 	ActionDelay = 0.1,
 	PlaceRetries = 1,             -- node attempts per unit per tick before giving up
 	RetryEvery = 1,               -- seconds before a unit retries after a failed placement
-	SummonHatchWait = 2,          -- max seconds to wait for the hatch record after a 10x
+	SummonHatchWait = 0.6,        -- max seconds to wait for the hatch record after a 10x
 	RescanAfterFails = 2,         -- this many failed placements in a row -> rescan
 	UpgradeRetry = 1,
 	VoteRetry = 2,
@@ -391,7 +391,7 @@ CallWithTimeout = function(Timeout, Fn, ...)
 	end)
 	local Deadline = os.clock() + Timeout
 	while not Done and os.clock() < Deadline do
-		task.wait(0.1)
+		task.wait(0.05)
 	end
 	if not Done then
 		return false, "timeout"
@@ -1987,45 +1987,50 @@ local function CompassUsedOnServer()
 	return Scan(EndpointsClient.session)
 end
 
-local function UseCompass()
+-- Force = retry even if a previous attempt this session failed (used right
+-- before the first summon, which must never happen before the compass pick).
+local function UseCompass(Force)
 	if State.CompassDone then
-		return
+		return true
 	end
 	if CompassUsedOnServer() or HasUnit(Config.CompassUnit) then
 		State.CompassDone = true
 		SaveState()
-		return
+		return true
 	end
-	if CompassTried then
-		return
+	if CompassTried and not Force then
+		return false
 	end
 	CompassTried = true
 
 	local Remote = GetEndpoint("set_celestial_compass_pick")
 	if not Remote then
 		Log("compass remote not found")
-		return
+		return false
 	end
-	local Ok, Result = CallWithTimeout(8, function()
+	local Ok, Result = CallWithTimeout(5, function()
 		return Remote:InvokeServer(Config.CompassId, Config.CompassUnit)
 	end)
 	if not Ok then
 		Log("compass failed: %s", tostring(Result))
-		return
+		return false
 	end
 	if type(Result) == "string" then
 		Log("compass replied: %s", Result)
 		if Result:lower():find("already", 1, true) then
 			State.CompassDone = true
 			SaveState()
+			return true
 		end
-		return
+		return false
 	end
 	if Result ~= false then
 		State.CompassDone = true
 		SaveState()
 		Log("compass used -> %s", Config.CompassUnit)
+		return true
 	end
+	return false
 end
 
 -- claim everything ------------------------------------------------------
@@ -2400,7 +2405,7 @@ local function RollTen(BannerId)
 	local GemsBefore = GetGems()
 	-- a timeout does not mean the roll failed: the gems/hatch checks below are
 	-- the source of truth, so keep going even when the invoke never returns
-	CallWithTimeout(10, InvokeServer, "buy_from_banner", BannerId, "gems10")
+	CallWithTimeout(5, InvokeServer, "buy_from_banner", BannerId, "gems10")
 	-- the cinematic module may only load once the roll is in flight
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
@@ -2409,16 +2414,16 @@ local function RollTen(BannerId)
 	-- the invoke returns once the server handled it, so check right away and
 	-- only then poll (fast) instead of sleeping fixed steps
 	local Charged = GetGems() < GemsBefore
-	local ChargeDeadline = os.clock() + 3
+	local ChargeDeadline = os.clock() + 1.5
 	while not Charged and os.clock() < ChargeDeadline do
-		task.wait(0.03)
+		task.wait(0.015)
 		Charged = GetGems() < GemsBefore
 	end
 
 	local Results = DiffHatches(Before, HatchCounters())
 	local HatchDeadline = os.clock() + Config.SummonHatchWait
 	while #Results == 0 and os.clock() < HatchDeadline do
-		task.wait(0.03)
+		task.wait(0.015)
 		Results = DiffHatches(Before, HatchCounters())
 	end
 	return Charged, Results
@@ -2428,6 +2433,12 @@ local AutoSell -- defined below; sells dupes after every 10x summon
 
 local function SummonTenOnce()
 	if State.Summoned then
+		return
+	end
+	-- The compass pick must be used before the very first summon. Retry it here
+	-- even if an earlier lobby pass failed, and defer the roll until it lands.
+	if not State.CompassDone and not UseCompass(true) then
+		Log("compass not used yet — deferring the first summon to the next lobby visit")
 		return
 	end
 	local Banner = Banners[Config.SummonBanner]
@@ -2518,7 +2529,7 @@ local function HuntUnit()
 				AutoSell()
 			end
 		elseif #Results == 0 then
-			task.wait(0.5)
+			task.wait(0.15)
 		end
 	end
 	return false
@@ -3360,6 +3371,91 @@ end -- end lobby scope block
 -- under Luau's 200-local limit; RunInGame is exported for Main below
 local RunInGame
 do
+local RunService = game:GetService("RunService")
+
+local PlaceConfig = {
+	Percent = 5,
+	NodeSpacing = 2.5,
+	RadiusGround = 40,
+	RadiusHill = 40,
+	RadiusFarm = 10,
+	FarmTerrain = "ground",
+	ShowVisuals = true,
+	PlaceRetries = 1,
+	RetryEvery = 1,
+	RescanAfterFails = 2,
+	UpgradeRetry = 1,
+	ActionDelay = 0.1,
+
+	-- scoring: which unit to place / upgrade next
+	PlaceStrategy = "value", -- "value" | "farm_first" | "role_spread"
+	UpgradeStrategy = "value", -- "spread" | "value" | "farm_first"
+	PlaceDpsWeight = 2, -- raw DPS is the primary placement score for combat units
+	PlaceDpsPerCostWeight = 5, -- secondary efficiency bonus
+	UpgradeRawDpsWeight = 4, -- bonus for upgrading high-DPS units when stable
+	PlaceFarmWeight = 60,
+	PlaceBuffWeight = 20,
+	PlaceSpreadPenalty = 2, -- low: fill the best unit to its cap before diversifying
+	PlacePathWeight = 1,
+	DefaultRange = 8, -- used when a unit has no range stat
+	ClusterWeight = 4, -- keep combat units packed together instead of scattering
+	OutOfRangePenalty = 1000, -- nodes this far outside range are essentially skipped
+	UpgradesPerTick = 3,
+	UpgradeSpreadWeight = 40,
+	UpgradeValueWeight = 10000,
+	UpgradeRecencyWeight = 0.5,
+
+	-- learned from the live game: farm upgrades compound, combat upgrades pay
+	-- by DPS-per-yen, and early waves are for building the army.
+	EstimatedWaves = 25,
+	FarmUpgradeUntilWave = 12,
+	FarmUpgradeWeight = 1000,
+	CombatUpgradeWeight = 10000,
+	EarlyPlaceWaves = 5, -- place freely before this wave, upgrade after
+	PlaceMoneyHeadroom = 2, -- still place if money >= headroom * cheapest upgrade
+	-- dynamic threat / farm economy
+	EnemyHpPerWave = 40, -- last-resort HP estimate per wave
+	PathLength = 180, -- fallback path length if the path cache is empty
+	MinDefenseSafety = 2,
+	MaxDefenseSafety = 6,
+	MinCombatBeforeFarms = 2, -- floor; real value = lanes + 2
+	MaxCombatBeforeFarms = 6,
+	FarmQuota = 3, -- how many farm units to place before going all-in on combat
+	AoeDefaultRadius = 4, -- fallback AoE radius when an attack has an aoe but no size field
+	-- placement: must reach the path, then prefer the scan center
+	RangeSafety = 0.8, -- max distance from node to path as a fraction of range
+	PathProximityWeight = 0.25, -- secondary: closer to path is better
+	DistanceWeight = 1, -- primary: closest to scan center wins
+	MaxPlaceRadius = 28, -- combat units: studs from the scan center
+	MaxFarmPlaceRadius = 45, -- farms may sit outside the combat ring
+	HitboxPadding = 0, -- studs added to every _hitbox radius when testing nodes
+	-- wait-or-spend planning: save for the best DPS purchase when it is worth it
+	WaitEnabled = true,
+	IncomeWindow = 20, -- seconds of income history used for the rate
+	IncomeMinSeconds = 3, -- need this much history before trusting the rate
+	MaxWaitSeconds = 30, -- never save longer than this for one purchase
+	PlanHorizon = 90, -- seconds a purchase is assumed to keep paying off
+	SecondsPerWave = 30, -- fallback until real wave lengths are measured
+	FarmSpendPaybackFactor = 0.5, -- farm buys must repay within this fraction of the horizon
+	PlaceFirstUntilFull = true, -- always place while any unit can still be placed; upgrade only once the roster is full
+	PlacePreference = 1.25, -- bias toward placing another unit over upgrading (value multiplier)
+	UnreachedGainFactor = 0.3, -- a placement that cannot reach the lane counts this much of its DPS
+	ClaimSeconds = 3, -- temporary claim on a node while a spawn replicates
+	RejectCooldown = 10, -- skip a node this long after the server rejects a spawn there
+	BlockedCooldown = 20, -- skip a node this long after the pre-spawn probe blocks it
+	ClusterRadius = 6, -- studs: units within this distance count as neighbors
+	FallbackPathWeight = 10, -- no node reaches the lane: each stud closer to it is worth this much
+	FallbackDistanceWeight = 0.1, -- ...and centre distance only breaks ties
+	MarginalReachPenalty = 40, -- node reaches the lane only at the edge of the range
+	OutsideRadiusPenalty = 300, -- reaching nodes beyond MaxPlaceRadius rank below all inside it
+	CoverageWeight = 0.5, -- score per stud of lane a node covers with the unit's range
+	HitboxHeightTolerance = 4, -- studs of slack along the cylinder axis (multi-level maps)
+	PlaceHeightOffset = 0, -- 0 = place on the ground surface, not on the floating marker
+	ShowQueueArrows = true,
+}
+
+PlaceConfig.ShowVisuals = Config.ShowVisuals -- master switch from the Kaitun config
+
 local Placer = {
 	Nodes = {},
 	Used = {},
@@ -3372,20 +3468,156 @@ local Placer = {
 	LastWarn = 0,
 	ModelIds = setmetatable({}, { __mode = "k" }),
 	Occupied = {},
+	UnitCenters = {},
+	Neighbors = {},
+	IncomeSamples = {},
+	IncomeLast = nil,
+	IncomeStart = nil,
+	WaveClock = { Wave = nil, Time = nil, Durations = {} },
+	Target = nil,
+	LastWaitLog = 0,
+	PathLines = {},
+	Samples = nil,
+	NodeGrid = nil,
 	OccupiedAt = 0,
+	UnitCounts = {},
+	UnitRanges = {},
+	FarmStats = {},
+	Enemies = setmetatable({}, { __mode = "k" }),
+	EnemyWatch = setmetatable({}, { __mode = "k" }),
+	PathEnd = nil,
+	PathPoints = {},
+	ScanCenter = nil,
+	ScanCenterDistance = 0,
+	AttackData = nil,
+	UpgradeAt = setmetatable({}, { __mode = "k" }),
+	LastUpgradeWarn = 0,
+	LastUpgradeDiag = 0,
+	LastWave = 0,
+	LastMatchActive = false,
+	LastMapId = nil,
+	LastDefenseDiag = 0,
+	Defense = nil,
+	Queue = { Place = nil, Upgrade = nil, Upgrades = {} },
 	Core = nil,
 	Paths = nil,
 	Grid = nil,
 }
 
--- a node that has a unit on it (ours or anyone's) or that failed twice is
--- retired for good: never picked again and its visual dot is removed
-function Placer.Retire(Node)
-	Placer.Used[Node] = true
-	if Node.Dot then
-		Node.Dot:Destroy()
-		Node.Dot = nil
+-- Taken/rejected nodes are excluded from placement, but their marker stays on
+-- the map — same as auto_place.lua. Destroying the dot here made occupied
+-- spots look like the scan never found nodes there. Recolor instead so the
+-- full scanned grid stays visible.
+local VisualTakenColor = Color3.fromRGB(120, 160, 180)
+
+-- A claim is TEMPORARY (Used[Node] = expiry time). It only covers a spawn that
+-- is in flight or was just rejected; it never outlives the unit, so selling a
+-- unit always returns its node to the original state.
+function Placer.Retire(Node, Duration)
+	Placer.Used[Node] = os.clock() + (Duration or PlaceConfig.ClaimSeconds)
+	if Node.Dot and Node.Dot.Parent then
+		Node.Dot.Color = VisualTakenColor
+		Node.Dot.Transparency = 0.85
 	end
+end
+
+function Placer.IsUsed(Node)
+	local Expiry = Placer.Used[Node]
+	if not Expiry then
+		return false
+	end
+	if Expiry <= os.clock() then
+		Placer.Used[Node] = nil
+		return false
+	end
+	return true
+end
+
+-- Path geometry ------------------------------------------------------------
+-- Lanes are kept as separate polylines. The old code concatenated every lane
+-- into one list, which created fake segments joining the end of one lane to the
+-- start of the next and corrupted every distance measured against it.
+local SampleStep = 2 -- studs between samples along a lane
+
+function Placer.SetPathLines(Lines)
+	Placer.PathLines = Lines or {}
+	Placer.Samples = nil
+end
+
+-- true XZ distance from a point to the nearest lane segment
+function Placer.PathDistanceXZ(Position)
+	local Best = math.huge
+	local Px, Pz = Position.X, Position.Z
+	for _, Line in ipairs(Placer.PathLines) do
+		for Index = 1, #Line - 1 do
+			local A, B = Line[Index], Line[Index + 1]
+			local Abx, Abz = B.X - A.X, B.Z - A.Z
+			local Apx, Apz = Px - A.X, Pz - A.Z
+			local Length2 = Abx * Abx + Abz * Abz
+			local T = Length2 > 0 and math.clamp((Apx * Abx + Apz * Abz) / Length2, 0, 1) or 0
+			local Dx, Dz = Apx - Abx * T, Apz - Abz * T
+			local D2 = Dx * Dx + Dz * Dz
+			if D2 < Best then
+				Best = D2
+			end
+		end
+	end
+	return math.sqrt(Best)
+end
+
+-- evenly spaced points along every lane (built once per scan)
+function Placer.GetSamples()
+	if Placer.Samples then
+		return Placer.Samples
+	end
+	local Out = {}
+	for _, Line in ipairs(Placer.PathLines) do
+		for Index = 1, #Line - 1 do
+			local A, B = Line[Index], Line[Index + 1]
+			local Length = math.sqrt((B.X - A.X) ^ 2 + (B.Z - A.Z) ^ 2)
+			local Steps = math.max(1, math.ceil(Length / SampleStep))
+			for Step = 0, Steps - 1 do
+				local T = Step / Steps
+				Out[#Out + 1] = { X = A.X + (B.X - A.X) * T, Z = A.Z + (B.Z - A.Z) * T }
+			end
+		end
+	end
+	Placer.Samples = Out
+	return Out
+end
+
+-- studs of lane inside a circle of Range around Position: how long a unit
+-- standing there can actually shoot at enemies. math.huge = no path data.
+function Placer.PathCoverage(Position, Range)
+	local Samples = Placer.GetSamples()
+	if #Samples == 0 then
+		return math.huge
+	end
+	local R2 = Range * Range
+	local Count = 0
+	for _, Sample in ipairs(Samples) do
+		local Dx, Dz = Sample.X - Position.X, Sample.Z - Position.Z
+		if Dx * Dx + Dz * Dz <= R2 then
+			Count += 1
+		end
+	end
+	return Count * SampleStep
+end
+
+-- cached per node and range bucket (nodes and lanes are static between scans)
+function Placer.NodeCoverage(Node, Range)
+	local Cache = Node.CoverageCache
+	if not Cache then
+		Cache = {}
+		Node.CoverageCache = Cache
+	end
+	local Key = math.floor(Range * 2 + 0.5)
+	local Value = Cache[Key]
+	if Value == nil then
+		Value = Placer.PathCoverage(Node.Position, Range)
+		Cache[Key] = Value
+	end
+	return Value
 end
 
 local ProbeSize = Vector3.new(0.05, 2.7, 0.05)
@@ -3445,7 +3677,9 @@ local function TerrainKind(Hit)
 	return nil
 end
 
-local function DistToRoadPart(Position, Part)
+-- XZ distance from a point to an oriented part's box. Works for road plates
+-- and for unit _hitbox rods (which are much wider than the node spacing).
+local function DistToPartXZ(Position, Part)
 	local LocalPos = Part.CFrame:PointToObjectSpace(Position)
 	local Half = Part.Size / 2
 	local Closest = Part.CFrame:PointToWorldSpace(Vector3.new(
@@ -3459,32 +3693,36 @@ end
 
 local function NearRoad(Position, RoadParts)
 	for _, Part in ipairs(RoadParts) do
-		if DistToRoadPart(Position, Part) <= 0.01 then
+		if DistToPartXZ(Position, Part) <= 0.01 then
 			return true
 		end
 	end
 	return false
 end
 
-local function ValidateNodes(Nodes)
-	if #Nodes == 0 then
-		return
-	end
-	local Bounds = ReplicatedStorage:FindFirstChild("_bounds")
-	local Ignore = workspace:FindFirstChild("ignore")
-	local Road = workspace:FindFirstChild("_road")
-	local UnitsFolder = workspace:FindFirstChild("_UNITS")
-	local Dead = workspace:FindFirstChild("_DEAD_UNITS")
+-- workspace:GetPartsInPart cannot see parts parented to ReplicatedStorage.
+-- _bounds normally lives there, so we must temporarily move it under workspace.
+-- Never rely on the game's `ignore` folder — it disappears between maps, which
+-- silently disabled all bounds blocking and made every node look valid.
 
+-- Unit hitboxes are NOT part of this static test: they come and go, so a node
+-- under a unit during a scan would stay invalid after the unit is sold. Live
+-- occupancy (Placer.RefreshOccupied + the pre-spawn hitbox check) handles units.
+local function RunBlockProbe(Positions)
+	local Bounds = ReplicatedStorage:FindFirstChild("_bounds")
+	local Road = workspace:FindFirstChild("_road")
+
+	local OriginalParent = Bounds and Bounds.Parent or nil
+	-- no holder folder: _bounds is parented straight to workspace for the query
 	local Moved = false
-	if Bounds and Ignore and Bounds.Parent ~= Ignore then
-		Bounds.Parent = Ignore
+	if Bounds and Bounds.Parent ~= workspace then
+		Bounds.Parent = workspace
 		Moved = true
 	end
 
 	local Restored = {}
-	local function EnableQuery(Root, OnlyHitbox)
-		for _, Part in ipairs(Root:GetDescendants()) do
+	local function EnableQuery(R, OnlyHitbox)
+		for _, Part in ipairs(R:GetDescendants()) do
 			if Part:IsA("BasePart") and (not OnlyHitbox or Part.Name == "_hitbox") and not Part.CanQuery then
 				Part.CanQuery = true
 				Restored[#Restored + 1] = Part
@@ -3493,12 +3731,6 @@ local function ValidateNodes(Nodes)
 	end
 	if Bounds then
 		EnableQuery(Bounds, false)
-	end
-	if UnitsFolder then
-		EnableQuery(UnitsFolder, true)
-	end
-	if Dead then
-		EnableQuery(Dead, true)
 	end
 
 	local Probe = Instance.new("Part")
@@ -3515,7 +3747,7 @@ local function ValidateNodes(Nodes)
 	local Overlap = OverlapParams.new()
 	Overlap.FilterType = Enum.RaycastFilterType.Include
 	local Filter = {}
-	for _, Item in ipairs({ Bounds, Road, UnitsFolder, Dead }) do
+	for _, Item in ipairs({ Bounds, Road }) do
 		if Item then
 			Filter[#Filter + 1] = Item
 		end
@@ -3523,32 +3755,50 @@ local function ValidateNodes(Nodes)
 	Overlap.FilterDescendantsInstances = Filter
 
 	local Offset = Vector3.new(0, ProbeSize.Y / 2 + 0.1, 0)
-	for _, Node in ipairs(Nodes) do
-		Probe.CFrame = CFrame.new(Node.Position + Offset)
-		Node.Valid = true
+	local Results = {}
+	for Index, Position in ipairs(Positions) do
+		Probe.CFrame = CFrame.new(Position + Offset)
+		local Blocked = false
 		for _, Touched in ipairs(workspace:GetPartsInPart(Probe, Overlap)) do
 			local Invalid = false
-			if Touched.Name == "_hitbox" and Touched.Parent and Touched.Parent.Parent
-				and (Touched.Parent.Parent == UnitsFolder or Touched.Parent.Parent == Dead)
-				and CollectionService:HasTag(Touched.Parent, "player_units") then
-				Invalid = true
-			elseif (Road and Touched:IsDescendantOf(Road)) or (Bounds and Touched:IsDescendantOf(Bounds)) then
+			if (Road and Touched:IsDescendantOf(Road)) or (Bounds and Touched:IsDescendantOf(Bounds)) then
 				Invalid = true
 			end
 			if Invalid then
-				Node.Valid = false
+				Blocked = true
 				break
 			end
 		end
+		Results[Index] = Blocked
 	end
 
 	Probe:Destroy()
 	for _, Part in ipairs(Restored) do
 		Part.CanQuery = false
 	end
-	if Moved and Bounds then
-		Bounds.Parent = ReplicatedStorage
+	if Moved and Bounds and OriginalParent then
+		Bounds.Parent = OriginalParent
 	end
+	return Results
+end
+
+local function ValidateNodes(Nodes)
+	if #Nodes == 0 then
+		return
+	end
+	local Positions = {}
+	for _, Node in ipairs(Nodes) do
+		Positions[#Positions + 1] = Node.Position
+	end
+	local Results = RunBlockProbe(Positions)
+	for Index, Node in ipairs(Nodes) do
+		Node.Valid = not Results[Index]
+	end
+end
+
+-- Final safety check at the exact CFrame we are about to send to the server.
+local function IsSpotBlocked(Position)
+	return RunBlockProbe({ Position })[1] == true
 end
 
 local LedgeOffsets = {}
@@ -3577,20 +3827,20 @@ end
 
 local function ScanCircle(Center, FaceTarget, RoadParts)
 	local Nodes = {}
-	local FarmOuter = Config.RadiusGround + Config.RadiusFarm
-	local MaxRadius = math.max(Config.RadiusGround, Config.RadiusHill, FarmOuter)
-	for Gx = -MaxRadius, MaxRadius, Config.NodeSpacing do
-		for Gz = -MaxRadius, MaxRadius, Config.NodeSpacing do
+	local FarmOuter = PlaceConfig.RadiusGround + PlaceConfig.RadiusFarm
+	local MaxRadius = math.max(PlaceConfig.RadiusGround, PlaceConfig.RadiusHill, FarmOuter)
+	for Gx = -MaxRadius, MaxRadius, PlaceConfig.NodeSpacing do
+		for Gz = -MaxRadius, MaxRadius, PlaceConfig.NodeSpacing do
 			local D2 = Gx * Gx + Gz * Gz
 			if D2 <= MaxRadius * MaxRadius then
 				local Origin = Center + Vector3.new(Gx, RayHeight, Gz)
 				local Hit = Placer.Core.raycast(Origin, Vector3.new(0, -RayHeight * 2, 0))
 				local Instance_ = Hit and Hit.Instance
 				local Kind = TerrainKind(Instance_)
-				local NodeRadius = Kind == "hill" and Config.RadiusHill or Config.RadiusGround
+				local NodeRadius = Kind == "hill" and PlaceConfig.RadiusHill or PlaceConfig.RadiusGround
 				local KindOk = D2 <= NodeRadius * NodeRadius
 				local FarmZone = Kind == "ground"
-					and D2 > Config.RadiusGround * Config.RadiusGround
+					and D2 > PlaceConfig.RadiusGround * PlaceConfig.RadiusGround
 					and D2 <= FarmOuter * FarmOuter
 				if Kind and (KindOk or FarmZone)
 					and Placer.Core.is_valid_raycast_hit(Instance_, HybridDef)
@@ -3604,7 +3854,7 @@ local function ScanCircle(Center, FaceTarget, RoadParts)
 						Gz = Gz,
 						Position = Hit.Position,
 						CFrame = CFrame.lookAt(
-							Hit.Position + Vector3.new(0, 0.5, 0),
+							Hit.Position + Vector3.new(0, PlaceConfig.PlaceHeightOffset, 0),
 							Vector3.new(FaceTarget.X, Hit.Position.Y, FaceTarget.Z)
 						),
 					}
@@ -3659,7 +3909,7 @@ local function AddVisualHighlight(Folder, Color, FillTrans, OutlineTrans)
 end
 
 local function VisualizeScan(Lanes)
-	if not Config.ShowVisuals then
+	if not PlaceConfig.ShowVisuals then
 		return
 	end
 	ClearScanVisuals()
@@ -3690,19 +3940,19 @@ local function VisualizeScan(Lanes)
 		local RingY = Center.Y + 1.2
 
 		local Rings = {
-			{ Radius = Config.RadiusGround, Color = VisualRingColor },
+			{ Radius = PlaceConfig.RadiusGround, Color = VisualRingColor },
 		}
-		if Config.RadiusHill ~= Config.RadiusGround then
-			Rings[#Rings + 1] = { Radius = Config.RadiusHill, Color = VisualKindColors.hill }
+		if PlaceConfig.RadiusHill ~= PlaceConfig.RadiusGround then
+			Rings[#Rings + 1] = { Radius = PlaceConfig.RadiusHill, Color = VisualKindColors.hill }
 		end
 		local FarmRingDrawn = false
 		for _, Ring in ipairs(Rings) do
-			if math.abs(Ring.Radius - Config.RadiusFarm) < 0.01 then
+			if math.abs(Ring.Radius - PlaceConfig.RadiusFarm) < 0.01 then
 				FarmRingDrawn = true
 			end
 		end
-		if not FarmRingDrawn and Config.RadiusFarm > Config.RadiusGround then
-			Rings[#Rings + 1] = { Radius = Config.RadiusFarm, Color = VisualFarmRingColor }
+		if not FarmRingDrawn and PlaceConfig.RadiusFarm > PlaceConfig.RadiusGround then
+			Rings[#Rings + 1] = { Radius = PlaceConfig.RadiusFarm, Color = VisualFarmRingColor }
 		end
 		for _, Ring in ipairs(Rings) do
 			for I = 0, VisualRingSegments - 1 do
@@ -3743,12 +3993,14 @@ local function VisualizeScan(Lanes)
 			local Dot = MakeVisualPart({
 				Shape = Enum.PartType.Cylinder,
 				Size = Vector3.new(0.15, 0.55, 0.55),
-				CFrame = CFrame.new(Node.Position + Vector3.new(0, 0.45, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+				CFrame = CFrame.new(Node.Position + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90)),
 				Color = Color,
 				Transparency = Transparency,
 			})
 			Dot.Parent = Folder
 			Node.Dot = Dot
+			Node.BaseDotColor = Color
+			Node.BaseDotTransparency = Transparency
 		end
 
 		-- center marker: floating billboard arrow, same images as _UnitPointer
@@ -3824,32 +4076,56 @@ local function Rescan()
 	end
 	local Paths = GetPvePaths()
 	local PathPoints = {}
+	local PathLines = {}
 	for _, Path in ipairs(Paths) do
+		local Line = {}
 		for _, Point in ipairs(Path.Points) do
 			PathPoints[#PathPoints + 1] = Point.position
+			Line[#Line + 1] = Point.position
 		end
+		PathLines[#PathLines + 1] = Line
 	end
+	Placer.PathPoints = PathPoints
+	Placer.SetPathLines(PathLines)
 
 	local All = {}
 	local Lanes = {}
+	Placer.ScanCenter = nil
+	Placer.ScanCenterDistance = 0
 	for _, Path in ipairs(Paths) do
-		local Distance = Path.Total * math.clamp(Config.Percent, 0, 100) / 100
+		-- the last path point is the enemy's goal (the base)
+		if #Path.Points > 0 then
+			Placer.PathEnd = Path.Points[#Path.Points].position
+		end
+		local Distance = Path.Total * math.clamp(PlaceConfig.Percent, 0, 100) / 100
 		local Center = PointAtDistance(Path.Points, Distance)
+		-- the scan center is our defended line: only enemies PAST this point
+		-- on the way to the base count as leaks
+		if not Placer.ScanCenter then
+			Placer.ScanCenter = Center
+			Placer.ScanCenterDistance = Distance
+		end
 		local EnemyDir = PointAtDistance(Path.Points, math.max(0, Distance - 15))
 		local Nodes = ScanCircle(Center, EnemyDir, RoadParts)
 		ValidateNodes(Nodes)
 		MarkLedges(Nodes)
 		local LaneNodes = {}
 		for _, Node in ipairs(Nodes) do
-			local Best = math.huge
+			local Best, BestXZ = math.huge, math.huge
 			for _, Point in ipairs(PathPoints) do
 				local Dx, Dy, Dz = Node.Position.X - Point.X, Node.Position.Y - Point.Y, Node.Position.Z - Point.Z
 				local D2 = Dx * Dx + Dy * Dy + Dz * Dz
 				if D2 < Best then
 					Best = D2
 				end
+				local XZ = Dx * Dx + Dz * Dz
+				if XZ < BestXZ then
+					BestXZ = XZ
+				end
 			end
 			Node.PathDist = math.sqrt(Best)
+			local SegmentXZ = Placer.PathDistanceXZ(Node.Position)
+			Node.PathDistXZ = SegmentXZ < math.huge and SegmentXZ or math.sqrt(BestXZ)
 			Node.BaseValid = Node.Valid
 			All[#All + 1] = Node
 			LaneNodes[#LaneNodes + 1] = Node
@@ -3945,9 +4221,121 @@ local function GetMoney()
 	return Value and Value:IsA("ValueBase") and Value.Value or nil
 end
 
+-- Money changes between building the queue and invoking the server (and
+-- between two upgrades in one tick), so re-check immediately before every
+-- spend. If the stat is not replicated yet we treat it as unaffordable rather
+-- than firing a request that would only be rejected.
+local function CanAfford(Cost)
+	local Money = GetMoney()
+	return Money ~= nil and Money >= Cost
+end
+
 local function GetWave()
 	local Value = workspace:FindFirstChild("_wave_num")
 	return Value and Value:IsA("ValueBase") and Value.Value or nil
+end
+
+-- The live map's wave count lives in Waves[Loader.LevelData.waves].waves.
+-- Story maps have a fixed count (e.g. namek_level_1 = 15); infinite maps have
+-- no max, so return nil and let the configured fallback take over.
+local WavesData
+local function GetMaxWave()
+	local Key = Loader.LevelData and Loader.LevelData.waves
+	if not Key then
+		return nil
+	end
+	if not WavesData then
+		local Ok, Data = pcall(function()
+			return Loader.load_data(nil, "Waves")
+		end)
+		if Ok and type(Data) == "table" then
+			WavesData = Data
+		end
+	end
+	local Def = WavesData and WavesData[Key]
+	-- story levels can be `{ template = "aot_level_1", override_waves = {...} }`
+	-- instead of carrying their own wave list — follow the template chain.
+	local Seen = {}
+	while type(Def) == "table" and Def.template and not Def.waves and not Def.infinite do
+		if Seen[Def.template] then
+			break
+		end
+		Seen[Def.template] = true
+		Def = WavesData[Def.template]
+	end
+	if type(Def) ~= "table" or Def.infinite then
+		return nil
+	end
+	if type(Def.waves) ~= "table" then
+		if type(Def.override_waves) == "table" then
+			local N = 0
+			for _ in pairs(Def.override_waves) do N = N + 1 end
+			return N > 0 and N or nil
+		end
+		return nil
+	end
+	local Max = #Def.waves
+	if Max == 0 then
+		for _ in pairs(Def.waves) do
+			Max = Max + 1
+		end
+	end
+	return Max > 0 and Max or nil
+end
+
+-- Enemy-path length straight from the game's path cache.
+local function GetPathLength()
+	local Total = 0
+	for _, Path in ipairs(GetPvePaths()) do
+		if type(Path.Total) == "number" and Path.Total > Total then
+			Total = Path.Total
+		end
+	end
+	return Total > 0 and Total or nil
+end
+
+-- Expected enemy HP for this wave, from the resolved wave definition and the
+-- map's difficulty scaling. Live enemy health always wins when present.
+local GameSettings
+local function GetExpectedEnemyHp()
+	local Wave = tonumber(GetWave()) or 1
+	local Key = Loader.LevelData and Loader.LevelData.waves
+	local Def = WavesData and WavesData[Key]
+	local Seen = {}
+	while type(Def) == "table" and Def.template and not Def.waves do
+		if Seen[Def.template] then
+			break
+		end
+		Seen[Def.template] = true
+		Def = WavesData[Def.template]
+	end
+	local Base = PlaceConfig.EnemyHpPerWave * Wave
+	if type(Def) == "table" and type(Def.waves) == "table" then
+		local W = Def.waves[Wave]
+		if type(W) == "table" then
+			Base = Base * (1 + (tonumber(W.wave_diff_scale) or 0.5))
+		end
+	end
+	if not GameSettings then
+		local Ok, Data = pcall(function()
+			return Loader.load_data(nil, "GameplaySettings")
+		end)
+		if Ok and type(Data) == "table" then
+			GameSettings = Data
+		end
+	end
+	local Diff = Loader.LevelData and Loader.LevelData._difficulty
+	local Scales = GameSettings and GameSettings.DIFFICULTY_HEALTH_SCALES
+	if Diff and type(Scales) == "table" then
+		local S = Scales[Diff]
+		if type(S) == "table" then
+			S = S.health or S.Health or S.value or S.multiplier
+		end
+		if tonumber(S) then
+			Base = Base * tonumber(S)
+		end
+	end
+	return Base
 end
 
 local function EquippedUuids()
@@ -4031,31 +4419,162 @@ local function ModelUnitId(Model)
 	return Id
 end
 
--- one score for every unit kind: close to the lane center AND close to the
--- enemy path (squared stud distances, summed)
-local function PickNode(Pool, Farm)
-	local Best, BestScore
-	for _, Node in ipairs(Pool) do
-		local ZoneOk
-		if Farm then
-			ZoneOk = Node.FarmZone
-		else
-			ZoneOk = Node.KindOk
-		end
-		if Node.Valid and not Node.Bad and not Placer.Used[Node] and ZoneOk then
-			local PathDist = Node.PathDist or 0
-			local Score = Node.Gx * Node.Gx + Node.Gz * Node.Gz + PathDist * PathDist
-			if not BestScore or Score < BestScore then
-				Best, BestScore = Node, Score
+-- Live units carry their real attack range in _stats.range (the upgraded
+-- value). Prefer it over the static Units data so long-range units can use
+-- wider nodes and short-range ones get pulled tight to the lane.
+local function RefreshUnitRanges()
+	local Ranges = {}
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			local Id = ModelUnitId(Model)
+			if Id and Ranges[Id] == nil then
+				local Value = StatValue(Model, "range") or StatValue(Model, "range")
+				if Value ~= nil then
+					Ranges[Id] = tonumber(Value)
+				end
 			end
 		end
 	end
-	return Best
+	Placer.UnitRanges = Ranges
+end
+
+-- Live farm units expose their current yen-per-wave in _stats.farm_amount.
+local function RefreshFarmStats()
+	local Stats = {}
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			local Id = ModelUnitId(Model)
+			if Id and Stats[Id] == nil then
+				local Value = StatValue(Model, "farm_amount")
+				if Value ~= nil then
+					Stats[Id] = tonumber(Value)
+				end
+			end
+		end
+	end
+	Placer.FarmStats = Stats
+end
+
+-- A level-0 unit uses the base def; level N uses def.upgrade[N]. The game's
+-- upgrade[level+1] entry is the *next* level's stats.
+local function StatsAt(UnitId, Level)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" then
+		return nil
+	end
+	if Level <= 0 then
+		return Def
+	end
+	if type(Def.upgrade) ~= "table" then
+		return Def
+	end
+	return Def.upgrade[Level] or Def.upgrade[tostring(Level)] or Def
+end
+
+-- Farm ROI: extra yen per wave, what that upgrade costs, and how many waves
+-- are left to earn it back. Higher `value` = better investment.
+local function FarmRoi(UnitId, Level, Cost)
+	local Cur = Placer.FarmStats and Placer.FarmStats[UnitId]
+	if Cur == nil then
+		Cur = tonumber((StatsAt(UnitId, Level) or {}).farm_amount) or 0
+	end
+	local Next = tonumber((StatsAt(UnitId, Level + 1) or {}).farm_amount) or Cur
+	local Delta = Next - Cur
+	local Payback = Delta > 0 and Cost / math.max(Delta, 0) or math.huge
+	local MaxWave = GetMaxWave() or PlaceConfig.EstimatedWaves
+	local Remaining = math.max(0, MaxWave - (GetWave() or 1))
+	local Horizon = math.min(Remaining, 10)
+	return {
+		delta = Delta, payback = Payback, remaining = Remaining, horizon = Horizon,
+		value = Delta * Horizon / math.max(Cost, 1),
+	}
+end
+
+
+-- True distance from a position to the path centerline (point-to-segment,
+-- not nearest path point — the points are ~18 studs apart, so using points
+-- alone badly overestimates the distance for nodes beside the lane).
+local function DistanceToPath(Position)
+	return Placer.PathDistanceXZ(Position)
+end
+
+-- Combat placement, in priority order:
+--   1. the unit's range must REACH the lane (path within Range * RangeSafety);
+--      among those nodes the one closest to the scan centre wins, with lane
+--      coverage as a mild tie-break;
+--   2. nodes that only just reach the lane (within full Range) rank below clean
+--      reach by a small margin;
+--   3. if no node reaches, the node closest to the lane wins (centre distance
+--      only breaks ties).
+-- Returns the score and whether the node reaches the lane.
+local function NodeFitScore(Node, UnitId, Farm)
+	local Dist = math.sqrt(Node.Gx * Node.Gx + Node.Gz * Node.Gz)
+	if Farm then
+		return -Dist * PlaceConfig.PlacePathWeight + (Node.FarmZone and 25 or 0), true
+	end
+
+	local Range = Placer.UnitRanges and Placer.UnitRanges[UnitId]
+	if not Range then
+		local Def = Units[UnitId]
+		Range = tonumber(Def and Def.range) or PlaceConfig.DefaultRange
+	end
+	local PathDist = Node.PathDistXZ or DistanceToPath(Node.Position)
+	local SafeReach = Range * PlaceConfig.RangeSafety
+
+	if PathDist > Range then
+		-- cannot hit the lane from here: closest to the lane first
+		return -PlaceConfig.OutOfRangePenalty - (PathDist - SafeReach) * PlaceConfig.FallbackPathWeight
+			- Dist * PlaceConfig.FallbackDistanceWeight, false
+	end
+
+	local Score = -Dist * PlaceConfig.DistanceWeight - PathDist * PlaceConfig.PathProximityWeight
+	if PathDist > SafeReach then
+		Score = Score - PlaceConfig.MarginalReachPenalty
+	end
+	local Coverage = Placer.NodeCoverage(Node, Range)
+	if Coverage == math.huge then
+		Coverage = 0
+	end
+	Score = Score + math.min(Coverage, Range * 1.2) * PlaceConfig.CoverageWeight
+	if Dist > PlaceConfig.MaxPlaceRadius then
+		Score = Score - PlaceConfig.OutsideRadiusPenalty - (Dist - PlaceConfig.MaxPlaceRadius)
+	end
+	if IsBuffUnit(UnitId) then
+		Score = Score + 10
+	end
+	local Neighbors = Placer.Neighbors[Node] or 0
+	return Score + math.min(Neighbors, 6) * PlaceConfig.ClusterWeight, true
+end
+
+local function WithinPlaceRadius(Node, Farm)
+	local Limit = Farm and PlaceConfig.MaxFarmPlaceRadius or PlaceConfig.MaxPlaceRadius
+	return Node.Gx * Node.Gx + Node.Gz * Node.Gz <= Limit * Limit
+end
+
+local function PickNode(Pool, UnitId, Farm)
+	local Best, BestScore, BestReaches
+	for _, Node in ipairs(Pool) do
+		local ZoneOk
+		if Farm then
+			ZoneOk = Node.FarmZone and WithinPlaceRadius(Node, true)
+		else
+			ZoneOk = Node.KindOk -- combat radius is a soft penalty in NodeFitScore
+		end
+		if Node.Valid and ZoneOk and not Placer.NodeBusy(Node) then
+			local Score, Reaches = NodeFitScore(Node, UnitId, Farm)
+			if not BestScore or Score > BestScore then
+				Best, BestScore, BestReaches = Node, Score, Reaches
+			end
+		end
+	end
+	return Best, BestReaches
 end
 
 local function NodesFor(UnitId)
 	local Farm = IsFarmUnit(UnitId)
-	local Terrain = Farm and Config.FarmTerrain or TerrainForUnit(UnitId)
+	local Terrain = Farm and PlaceConfig.FarmTerrain or TerrainForUnit(UnitId)
 	local Pool = {}
 	for _, Node in ipairs(Placer.Nodes) do
 		if Node.BaseValid and (Terrain == "any" or Node.Kind == Terrain) then
@@ -4065,47 +4584,197 @@ local function NodesFor(UnitId)
 	return Pool, Farm
 end
 
--- nearest scanned node to a world position (used or not), no spacing radius:
--- a unit only ever occupies the single node it stands on
+-- nearest scanned node to a fixed placement slot (used or not). Callers must
+-- pass a unit's stable anchor, never its animated pivot. A unit occupies only
+-- the single node of its formation slot; neighbors stay free.
 function Placer.NearestNode(Position)
-	local Limit = Config.NodeSpacing * Config.NodeSpacing
 	local Best, BestD
-	for _, Node in ipairs(Placer.Nodes) do
+	for _, Node in ipairs(Placer.NodesNear(Position, PlaceConfig.NodeSpacing)) do
 		local Dx, Dz = Node.Position.X - Position.X, Node.Position.Z - Position.Z
 		local D = Dx * Dx + Dz * Dz
-		if D <= Limit and (not BestD or D < BestD) then
+		if not BestD or D < BestD then
 			Best, BestD = Node, D
 		end
 	end
 	return Best
 end
 
--- every unit in the match (ours AND other players') retires the ONE node it
--- is standing on. Occupied holds exactly those nodes — neighbors stay free.
--- Throttled: this is pure data (no parts/raycasting), but it still walks every
--- unit x node pair, so callers get at most one rebuild per 0.4s unless forced.
-function Placer.RefreshOccupied(Force)
-	local Now = os.clock()
-	if not Force and Now - Placer.OccupiedAt < 0.4 then
-		return
+-- The model pivot follows the unit's walk/attack animation, so reading it for
+-- occupancy makes the animated position drift onto neighboring nodes and burn
+-- them permanently. The game stores the fixed placement slot in
+-- _stats.formation_goal (a Part in workspace.ignore); fall back to the unit's
+-- _hitbox, and only then to the pivot. Summoned/path units are skipped — they
+-- move along the lane and have no fixed slot.
+local function UnitAnchorPosition(Model)
+	local Stats = Model:FindFirstChild("_stats")
+	if Stats then
+		local Parent = Stats:FindFirstChild("parent_unit")
+		if Parent and Parent:IsA("ObjectValue") and Parent.Value ~= nil then
+			return nil
+		end
 	end
-	Placer.OccupiedAt = Now
-	Placer.Occupied = {}
-	local Seen = {}
-	local function Check(Model)
-		if Model and not Seen[Model] and Model:IsA("Model") and Model:IsDescendantOf(workspace) then
-			Seen[Model] = true
-			local Ok, Pivot = pcall(function()
-				return Model:GetPivot()
-			end)
-			if Ok then
-				local Node = Placer.NearestNode(Pivot.Position)
-				if Node then
-					Placer.Occupied[Node] = true
-					if not Placer.Used[Node] then
-						Placer.Retire(Node)
+	-- the game keeps a fixed _hitbox rod at the placement spot; use it first
+	-- because the model pivot animates while this stays put
+	local Hitbox = Model:FindFirstChild("_hitbox", true)
+	if Hitbox and Hitbox:IsA("BasePart") then
+		return Hitbox.Position
+	end
+	local Goal = Stats and Stats:FindFirstChild("formation_goal")
+	local Slot = Goal and Goal:IsA("ObjectValue") and Goal.Value
+	if Slot and (Slot:IsA("BasePart") or Slot:IsA("Model")) then
+		local Ok, Cf = pcall(function()
+			return Slot:GetPivot()
+		end)
+		if Ok and Cf then
+			return Cf.Position
+		end
+	end
+	local Ok, Cf = pcall(function()
+		return Model:GetPivot()
+	end)
+	return Ok and Cf and Cf.Position or nil
+end
+
+-- Unit hitboxes ------------------------------------------------------------
+-- Every unit carries a `_hitbox` CYLINDER. Its real footprint is what blocks a
+-- node, so occupancy is computed from that part's own CFrame and Size only —
+-- never a fixed radius, never a fixed axis.
+--
+-- Roblox cylinders run along the part's local X axis (Size.X = length,
+-- Size.Y / Size.Z = the two diameters), and the game usually rotates them
+-- upright. The old code tested local X/Z with Size.X as the radius, which is
+-- the length axis, so rotated hitboxes were measured with the wrong numbers.
+-- Here we find the length axis, test the node against the elliptical disc
+-- perpendicular to it, then bound the node along the axis.
+
+local IndexCell = 5
+
+local function CellKey(Cx, Cz)
+	return Cx * 65536 + Cz
+end
+
+-- spatial hash of the scanned nodes: occupancy / nearest-node queries only
+-- touch the few cells around a point instead of every node
+function Placer.NodeIndex()
+	local Nodes = Placer.Nodes
+	local Index = Placer.NodeGrid
+	if Index and Index.Source == Nodes and Index.Count == #Nodes then
+		return Index
+	end
+	Index = { Source = Nodes, Count = #Nodes, Cells = {} }
+	for _, Node in ipairs(Nodes) do
+		local Key = CellKey(math.floor(Node.Position.X / IndexCell), math.floor(Node.Position.Z / IndexCell))
+		local Cell = Index.Cells[Key]
+		if not Cell then
+			Cell = {}
+			Index.Cells[Key] = Cell
+		end
+		Cell[#Cell + 1] = Node
+	end
+	Placer.NodeGrid = Index
+	return Index
+end
+
+-- every node whose centre is within Radius (XZ) of Position
+function Placer.NodesNear(Position, Radius)
+	local Out = {}
+	local Cells = Placer.NodeIndex().Cells
+	local MinX = math.floor((Position.X - Radius) / IndexCell)
+	local MaxX = math.floor((Position.X + Radius) / IndexCell)
+	local MinZ = math.floor((Position.Z - Radius) / IndexCell)
+	local MaxZ = math.floor((Position.Z + Radius) / IndexCell)
+	local R2 = Radius * Radius
+	for Cx = MinX, MaxX do
+		for Cz = MinZ, MaxZ do
+			local Cell = Cells[CellKey(Cx, Cz)]
+			if Cell then
+				for _, Node in ipairs(Cell) do
+					local Dx = Node.Position.X - Position.X
+					local Dz = Node.Position.Z - Position.Z
+					if Dx * Dx + Dz * Dz <= R2 then
+						Out[#Out + 1] = Node
 					end
 				end
+			end
+		end
+	end
+	return Out
+end
+
+local function Component(Vector, Axis)
+	if Axis == 1 then
+		return Vector.X
+	elseif Axis == 2 then
+		return Vector.Y
+	end
+	return Vector.Z
+end
+
+-- precompute everything a point test needs from one _hitbox part
+local function BuildHitbox(Part)
+	local Cf, Size = Part.CFrame, Part.Size
+	local Axis
+	if Part.Shape == Enum.PartType.Cylinder then
+		Axis = 1
+	else
+		-- not a Cylinder shape: treat the most vertical local axis as the length
+		local Best = -1
+		for Index, Vector in ipairs({ Cf.RightVector, Cf.UpVector, Cf.LookVector }) do
+			local Dot = math.abs(Vector.Y)
+			if Dot > Best then
+				Best, Axis = Dot, Index
+			end
+		end
+	end
+	local Ia, Ib
+	if Axis == 1 then
+		Ia, Ib = 2, 3
+	elseif Axis == 2 then
+		Ia, Ib = 1, 3
+	else
+		Ia, Ib = 1, 2
+	end
+	local Pad = PlaceConfig.HitboxPadding or 0
+	local Ra = math.max(Component(Size, Ia) / 2 + Pad, 0.05)
+	local Rb = math.max(Component(Size, Ib) / 2 + Pad, 0.05)
+	local Half = Component(Size, Axis) / 2 + (PlaceConfig.HitboxHeightTolerance or 0)
+	local Center = Part.Position
+	return {
+		Part = Part,
+		Inverse = Cf:Inverse(),
+		Axis = Axis, Ia = Ia, Ib = Ib,
+		Ra = Ra, Rb = Rb, Half = Half,
+		Center = Center,
+		-- bounding sphere, used only to pick which nodes are worth testing
+		Bound = math.sqrt(math.max(Ra, Rb) ^ 2 + Half * Half),
+	}
+end
+
+local function PointInHitbox(Box, Position)
+	local Local = Box.Inverse * Position
+	local Na = Component(Local, Box.Ia) / Box.Ra
+	local Nb = Component(Local, Box.Ib) / Box.Rb
+	if Na * Na + Nb * Nb > 1 then
+		return false
+	end
+	return math.abs(Component(Local, Box.Axis)) <= Box.Half
+end
+
+-- live hitboxes of every unit model (player units tag + _UNITS folder)
+function Placer.CollectHitboxes()
+	local Out, Seen = {}, {}
+	local function Check(Model)
+		if not Model or Seen[Model] or not Model:IsA("Model") or not Model:IsDescendantOf(workspace) then
+			return
+		end
+		local Dead = workspace:FindFirstChild("_DEAD_UNITS")
+		if Dead and Model:IsDescendantOf(Dead) then
+			return -- sold / killed: its hitbox no longer holds a node
+		end
+		Seen[Model] = true
+		for _, Part in ipairs(Model:GetDescendants()) do
+			if Part.Name == "_hitbox" and Part:IsA("BasePart") and Part.Parent then
+				Out[#Out + 1] = BuildHitbox(Part)
 			end
 		end
 	end
@@ -4118,105 +4787,1013 @@ function Placer.RefreshOccupied(Force)
 	for _, Model in ipairs(CollectionService:GetTagged("player_units")) do
 		Check(Model)
 	end
+	return Out
 end
 
--- is this the node a unit is actually standing on? RefreshOccupied fills
--- Occupied with each unit's single nearest node, so adjacent nodes stay free
+-- is this exact world point inside any live unit hitbox? (final pre-spawn guard)
+function Placer.PointInAnyHitbox(Position)
+	for _, Box in ipairs(Placer.CollectHitboxes()) do
+		local Dx, Dz = Box.Center.X - Position.X, Box.Center.Z - Position.Z
+		if Dx * Dx + Dz * Dz <= Box.Bound * Box.Bound and PointInHitbox(Box, Position) then
+			return true
+		end
+	end
+	return false
+end
+
+-- fixed centre of a unit's _hitbox (nil when there is none)
+local function UnitHitboxPosition(Model)
+	local Hitbox = Model:FindFirstChild("_hitbox", true)
+	if Hitbox and Hitbox:IsA("BasePart") and Hitbox.Parent then
+		return Hitbox.Position
+	end
+	return nil
+end
+
+-- Occupancy is rebuilt from the live hitboxes each pass: a node is occupied
+-- when its centre lies inside a hitbox cylinder. Nothing is retired here —
+-- occupancy is transient and disappears as soon as the hitbox is gone (unit
+-- sold, killed or the match ended), and the node returns to its scan colour.
+function Placer.RefreshOccupied(Force)
+	local Now = os.clock()
+	if not Force and Now - Placer.OccupiedAt < 0.4 then
+		return
+	end
+	Placer.OccupiedAt = Now
+
+	local Occupied, Centers, Neighbors = {}, {}, {}
+	for _, Box in ipairs(Placer.CollectHitboxes()) do
+		Centers[#Centers + 1] = Box.Center
+		for _, Node in ipairs(Placer.NodesNear(Box.Center, Box.Bound)) do
+			if not Occupied[Node] and PointInHitbox(Box, Node.Position) then
+				Occupied[Node] = true
+			end
+		end
+		for _, Node in ipairs(Placer.NodesNear(Box.Center, PlaceConfig.ClusterRadius)) do
+			Neighbors[Node] = (Neighbors[Node] or 0) + 1
+		end
+	end
+	-- a claim only bridges the gap until the new unit's hitbox replicates; once
+	-- the hitbox owns the node the claim is dropped, so selling the unit frees it
+	for Node in pairs(Occupied) do
+		Placer.Used[Node] = nil
+	end
+	Placer.Occupied = Occupied
+	Placer.UnitCenters = Centers
+	Placer.Neighbors = Neighbors
+
+	for _, Node in ipairs(Placer.Nodes) do
+		local Dot = Node.Dot
+		if Dot and Dot.Parent then
+			if Occupied[Node] or Placer.IsUsed(Node) then
+				Dot.Color = VisualTakenColor
+				Dot.Transparency = 0.85
+			elseif Node.BaseDotColor then
+				Dot.Color = Node.BaseDotColor
+				Dot.Transparency = Node.BaseDotTransparency or 0.55
+			end
+		end
+	end
+end
+
+-- busy = under a live unit hitbox, or briefly claimed by a spawn in flight
 function Placer.NodeBusy(Node)
-	return Placer.Occupied ~= nil and Placer.Occupied[Node] == true
+	return Placer.Occupied[Node] == true or Placer.IsUsed(Node)
 end
 
--- intent arrow: same billboard style as the scan center arrow, recolored per
--- action — green = placing a unit, orange = upgrading one. Auto-hides.
-local IntentArrow = { Anchor = nil }
+-- scoring -----------------------------------------------------------------
+local function DpsOf(Def)
+	if type(Def) ~= "table" then
+		return 0
+	end
+	local Damage = tonumber(Def.damage) or 0
+	local Cd = tonumber(Def.attack_cooldown) or tonumber(Def.cooldown) or 0
+	return Cd > 0 and Damage / Cd or Damage
+end
+
+local function UpgradeDefAt(UnitId, Level)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" or type(Def.upgrade) ~= "table" then
+		return nil
+	end
+	return Def.upgrade[Level + 1] or Def.upgrade[tostring(Level + 1)]
+end
+
+-- Which equipped unit to place next. Farm units open the economy, buffs are
+-- worth a slot, combat units rank by damage-per-second per yen. Under-used
+-- unit ids get a boost so the lineup spreads out.
+local function UnitPlaceScore(UnitId)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" then
+		return 0
+	end
+	local Cost = math.max(tonumber(Def.cost) or 1, 1)
+	local Score
+	if IsFarmUnit(UnitId) then
+		Score = PlaceConfig.PlaceFarmWeight + (tonumber(Def.farm_amount) or 0)
+		if PlaceConfig.PlaceStrategy == "farm_first" then
+			Score = Score * 10
+		end
+	elseif IsBuffUnit(UnitId) then
+		Score = PlaceConfig.PlaceBuffWeight
+	else
+		local Dps = DpsOf(Def)
+		Score = Dps * PlaceConfig.PlaceDpsWeight + Dps / Cost * PlaceConfig.PlaceDpsPerCostWeight
+	end
+	local Spread = PlaceConfig.PlaceSpreadPenalty
+	if PlaceConfig.PlaceStrategy == "role_spread" then
+		Spread = Spread * 3
+	end
+	return Score - (Placer.UnitCounts[UnitId] or 0) * Spread
+end
+
+-- Which placed unit to upgrade next.
+--  farm:   value = extra yen/wave * waves left / cost. Farm upgrades compound,
+--          so a short payback (cost / extra-yen-per-wave) is almost always the
+--          best buy early on.
+--  combat: value = DPS gain / cost, heavily discounted when the unit's spot
+--          is outside its range (an out-of-range upgrade deals no damage).
+local function UpgradeScore(Model, UnitId, Level, Cost)
+	local Now = os.clock()
+	local Wave = GetWave() or 1
+	local MaxWave = GetMaxWave() or PlaceConfig.EstimatedWaves
+	local Remaining = math.max(1, MaxWave - Wave)
+	local Farm = IsFarmUnit(UnitId)
+	local Score
+
+	if PlaceConfig.UpgradeStrategy == "spread" then
+		Score = -Level * PlaceConfig.UpgradeSpreadWeight
+			+ math.min(Now - (Placer.UpgradeAt[Model] or 0), 60) * PlaceConfig.UpgradeRecencyWeight
+	elseif PlaceConfig.UpgradeStrategy == "farm_first" then
+		Score = (Farm and 1000 or 0) - Level * PlaceConfig.UpgradeSpreadWeight
+	else
+		if Farm then
+			local Roi = FarmRoi(UnitId, Level, Cost)
+			if Wave <= PlaceConfig.FarmUpgradeUntilWave and Roi.payback <= Roi.remaining then
+				Score = Roi.value * PlaceConfig.FarmUpgradeWeight
+			else
+				Score = -Roi.payback
+			end
+			-- never feed the economy while the lane is leaking
+			if Placer.Defense and not Placer.Defense.stable then
+				Score = Score * 0.1
+			end
+		else
+			local CurDps = DpsOf(StatsAt(UnitId, Level))
+			local NextDps = DpsOf(StatsAt(UnitId, Level + 1))
+			local Gain = NextDps - CurDps
+			Score = Gain / math.max(Cost, 1) * PlaceConfig.CombatUpgradeWeight
+			-- scale by how much lane the unit's real position can still reach:
+			-- full value at good coverage, 20% when it cannot hit anything
+			local Pos = UnitHitboxPosition(Model)
+			if Pos then
+				local Range = Placer.UnitRanges[UnitId] or PlaceConfig.DefaultRange
+				local Fraction = math.min(1, Placer.PathCoverage(Pos, Range) / (Range * 1.2))
+				Score = Score * (0.2 + 0.8 * Fraction)
+			end
+			if Placer.Defense and Placer.Defense.stable then
+				-- defense is holding: compound the strongest damage dealers
+				Score = Score + NextDps * PlaceConfig.UpgradeRawDpsWeight
+			else
+				Score = Score * 1.5 -- shore up the defense first
+			end
+			Score = Score - Level * 2
+		end
+	end
+
+	if Farm then
+		Score = Score + 5
+	end
+	if IsBuffUnit(UnitId) then
+		Score = Score - 5
+	end
+	return Score
+end
+
+-- animated queue arrows: same billboard / bob / distance-scaling as the scan
+-- center arrow. Green = next placement, orange = next upgrade. They stay up
+-- and follow the queue targets instead of flashing during a single action.
+local IntentArrows = {}
 local IntentColors = {
 	place = Color3.fromRGB(80, 255, 140),
 	upgrade = Color3.fromRGB(255, 170, 60),
 }
+local ArrowGlowStuds = 5
+local ArrowBaseHeight = 1.5
 
-local function HideIntentArrow()
-	if IntentArrow.Anchor then
-		IntentArrow.Anchor:Destroy()
-		IntentArrow.Anchor = nil
+local function HideIntentArrow(Kind)
+	if Kind then
+		local State = IntentArrows[Kind]
+		if State then
+			if State.Connection then
+				State.Connection:Disconnect()
+			end
+			if State.Anchor then
+				State.Anchor:Destroy()
+			end
+			IntentArrows[Kind] = nil
+		end
+		return
+	end
+	for Key in pairs(IntentArrows) do
+		HideIntentArrow(Key)
 	end
 end
 
-local function ShowIntentArrow(Kind, Position)
-	HideIntentArrow()
-	local Color = IntentColors[Kind] or Color3.new(1, 1, 1)
-	local Anchor = Instance.new("Part")
-	Anchor.Name = "AA_IntentArrow"
-	Anchor.Anchored = true
-	Anchor.CanCollide = false
-	Anchor.CanQuery = false
-	Anchor.CanTouch = false
-	Anchor.CastShadow = false
-	Anchor.Transparency = 1
-	Anchor.Size = Vector3.new(1, 1, 1)
-	Anchor.CFrame = CFrame.new(Position + Vector3.new(0, 8, 0))
-	Anchor.Parent = workspace
-	local Billboard = Instance.new("BillboardGui")
-	Billboard.Size = UDim2.fromOffset(70, 70)
-	Billboard.AlwaysOnTop = true
-	Billboard.LightInfluence = 0
-	Billboard.MaxDistance = math.huge
-	Billboard.Parent = Anchor
-	local Glow = Instance.new("ImageLabel")
-	Glow.BackgroundTransparency = 1
-	Glow.Image = "rbxassetid://81351645241261"
-	Glow.ImageTransparency = 0.55
-	Glow.ImageColor3 = Color
-	Glow.AnchorPoint = Vector2.new(0.5, 0.5)
-	Glow.Position = UDim2.fromScale(0.5, 0.5)
-	Glow.Size = UDim2.fromScale(1, 1)
-	Glow.Parent = Billboard
-	local Arrow = Instance.new("ImageLabel")
-	Arrow.BackgroundTransparency = 1
-	Arrow.Image = "rbxassetid://81256616982657"
-	Arrow.ImageTransparency = 0.35
-	Arrow.ImageColor3 = Color
-	Arrow.AnchorPoint = Vector2.new(0.5, 0.5)
-	Arrow.Position = UDim2.fromScale(0.5, 0.5)
-	Arrow.Size = UDim2.fromScale(0.31, 0.31)
-	Arrow.Rotation = 180
-	Arrow.Parent = Billboard
-	IntentArrow.Anchor = Anchor
+local function SetIntentArrow(Kind, Position)
+	if not Position then
+		HideIntentArrow(Kind)
+		return
+	end
+	local State = IntentArrows[Kind]
+	if not State then
+		local Color = IntentColors[Kind] or Color3.new(1, 1, 1)
+		local Anchor = Instance.new("Part")
+		Anchor.Name = "AA_IntentArrow"
+		Anchor.Anchored = true
+		Anchor.CanCollide = false
+		Anchor.CanQuery = false
+		Anchor.CanTouch = false
+		Anchor.CastShadow = false
+		Anchor.Transparency = 1
+		Anchor.Size = Vector3.new(1, 1, 1)
+		Anchor.CFrame = CFrame.new(Position.X, Position.Y + ArrowBaseHeight, Position.Z)
+		Anchor.Parent = workspace
+		local Billboard = Instance.new("BillboardGui")
+		Billboard.Size = UDim2.fromOffset(70, 70)
+		Billboard.AlwaysOnTop = true
+		Billboard.LightInfluence = 0
+		Billboard.MaxDistance = math.huge
+		Billboard.Parent = Anchor
+		local Glow = Instance.new("ImageLabel")
+		Glow.BackgroundTransparency = 1
+		Glow.Image = "rbxassetid://81351645241261"
+		Glow.ImageTransparency = 0.55
+		Glow.ImageColor3 = Color
+		Glow.AnchorPoint = Vector2.new(0.5, 0.5)
+		Glow.Position = UDim2.fromScale(0.5, 0.5)
+		Glow.Size = UDim2.fromScale(1, 1)
+		Glow.Parent = Billboard
+		local Arrow = Instance.new("ImageLabel")
+		Arrow.BackgroundTransparency = 1
+		Arrow.Image = "rbxassetid://81256616982657"
+		Arrow.ImageTransparency = 0.35
+		Arrow.ImageColor3 = Color
+		Arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+		Arrow.Position = UDim2.fromScale(0.5, 0.5)
+		Arrow.Size = UDim2.fromScale(0.31, 0.31)
+		Arrow.Rotation = 180
+		Arrow.Parent = Billboard
+		State = {
+			Anchor = Anchor,
+			Billboard = Billboard,
+			X = Position.X,
+			Z = Position.Z,
+			BaseY = Position.Y + ArrowBaseHeight,
+			T0 = os.clock(),
+		}
+		local Camera = workspace.CurrentCamera
+		State.Connection = RunService.Heartbeat:Connect(function()
+			if not Anchor.Parent then
+				State.Connection:Disconnect()
+				return
+			end
+			local Bob = math.sin((os.clock() - State.T0) * 3) * 0.5
+			Anchor.CFrame = CFrame.new(State.X, State.BaseY + Bob, State.Z)
+			local Distance = (Camera.CFrame.Position - Anchor.Position).Magnitude
+			local PxPerStud = Camera.ViewportSize.Y
+				/ (2 * math.tan(math.rad(Camera.FieldOfView) / 2) * math.max(Distance, 1))
+			Billboard.Size = UDim2.fromOffset(ArrowGlowStuds * PxPerStud, ArrowGlowStuds * PxPerStud)
+		end)
+		IntentArrows[Kind] = State
+	else
+		local X, Z, BaseY = Position.X, Position.Z, Position.Y + ArrowBaseHeight
+		if State.X ~= X or State.Z ~= Z or State.BaseY ~= BaseY then
+			State.X, State.Z, State.BaseY = X, Z, BaseY
+			State.T0 = os.clock()
+			State.Anchor.CFrame = CFrame.new(X, BaseY, Z)
+		end
+	end
 end
 
-function Placer.PlaceOnce(Uuid, UnitId)
+-- Are the units on the map strong enough to stop the enemies before they
+-- reach the base? Uses live enemy health/speed and our in-range DPS.
+local function AssessDefense()
+	local MaxHP, MaxSpeed, Count = 0, 2, 0
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			if not CollectionService:HasTag(Model, "player_units") then
+				local Stats = Model:FindFirstChild("_stats")
+				local HP = Stats and Stats:FindFirstChild("health")
+				if HP and HP:IsA("ValueBase") then
+					Count += 1
+					local H = tonumber(HP.Value) or 0
+					if H > MaxHP then MaxHP = H end
+					local Spd = Stats:FindFirstChild("speed")
+					if Spd and Spd:IsA("ValueBase") then
+						local S = tonumber(Spd.Value) or 2
+						if S > MaxSpeed then MaxSpeed = S end
+					end
+				end
+			end
+		end
+	end
+	if MaxHP > 0 then
+		Placer.LastEnemyHP = MaxHP -- remember for gaps between enemy spawns
+	else
+		MaxHP = Placer.LastEnemyHP or GetExpectedEnemyHp()
+	end
+	local Dps = 0
+	for _, Model in ipairs(PlayerUnitModels()) do
+		local UnitId = ModelUnitId(Model)
+		if UnitId and not IsFarmUnit(UnitId) then
+			local Pos = UnitHitboxPosition(Model)
+			local Range = (Placer.UnitRanges and Placer.UnitRanges[UnitId]) or PlaceConfig.DefaultRange
+			if not Pos or Placer.PathCoverage(Pos, Range) > 0 then
+				Dps = Dps + DpsOf(StatsAt(UnitId, tonumber(StatValue(Model, "upgrade")) or 0))
+			end
+		end
+	end
+	local KillTime = MaxHP / math.max(Dps, 0.001)
+	local TransitTime = (GetPathLength() or PlaceConfig.PathLength) / math.max(MaxSpeed, 0.1)
+	local Safety = math.clamp(PlaceConfig.MinDefenseSafety + math.floor(Count / 3),
+		PlaceConfig.MinDefenseSafety, PlaceConfig.MaxDefenseSafety)
+	return {
+		hp = MaxHP, speed = MaxSpeed, count = Count, dps = Dps,
+		killTime = KillTime, transitTime = TransitTime, safety = Safety,
+		stable = Dps > 0 and KillTime * Safety <= TransitTime,
+	}
+end
+
+-- enemy intelligence -------------------------------------------------------
+local function GetAttackData()
+	if not Placer.AttackData then
+		local Ok, Data = pcall(function()
+			return Loader.load_data(nil, "Attacks")
+		end)
+		if Ok and type(Data) == "table" then
+			Placer.AttackData = Data
+		end
+	end
+	return Placer.AttackData
+end
+
+-- Range, DPS and AoE size for a unit at a given upgrade level.
+local function AttackProfile(UnitId, Level)
+	local Def = StatsAt(UnitId, Level) or {}
+	local Data = GetAttackData()
+	local Key = Def.primary_attack_no_upgrades
+	local Attack = Key and Data and Data[Key]
+	local Range
+	if type(Attack) == "table" and type(Attack.range) == "table" then
+		Range = tonumber(Attack.range[2])
+	end
+	local LiveRange = Placer.UnitRanges and Placer.UnitRanges[UnitId]
+	Range = LiveRange or Range or tonumber(Def.range) or PlaceConfig.DefaultRange
+	local HasAoe = type(Attack) == "table" and type(Attack.aoe) == "table"
+	local AoeRadius = 0
+	if HasAoe then
+		for _, Entry in pairs(Attack.aoe) do
+			if type(Entry) == "table" and type(Entry.aoe_type) == "table" then
+				for _, V in pairs(Entry.aoe_type) do
+					if tonumber(V) and tonumber(V) > AoeRadius then
+						AoeRadius = tonumber(V)
+					end
+				end
+			end
+		end
+		if AoeRadius <= 0 then
+			AoeRadius = PlaceConfig.AoeDefaultRadius
+		end
+	end
+	return { range = Range, dps = DpsOf(Def), aoe = HasAoe, aoeRadius = AoeRadius }
+end
+
+-- One enemy snapshot: raw stats + mechanics + effective HP + movement.
+local function ReadEnemy(Model)
+	local Stats = Model:FindFirstChild("_stats")
+	if not Stats then
+		return nil
+	end
+	local HP = Stats:FindFirstChild("health")
+	if not HP or not HP:IsA("ValueBase") then
+		return nil
+	end
+	local function Num(Name)
+		local V = Stats:FindFirstChild(Name)
+		return V and V:IsA("ValueBase") and tonumber(V.Value) or 0
+	end
+	local Prev = Placer.Enemies[Model]
+	local ParentRef = Stats:FindFirstChild("parent_unit")
+	local Parent = ParentRef and ParentRef:IsA("ObjectValue") and ParentRef.Value or nil
+	local Pos = Model:GetPivot().Position
+	local E = {
+		model = Model,
+		id = tostring((Stats:FindFirstChild("id") and Stats.id.Value) or Model.Name),
+		hp = tonumber(HP.Value) or 0,
+		baseHP = Num("health"),
+		shield = Num("shield") + Num("barrier"),
+		maxShield = Num("max_shield") + Num("max_barrier"),
+		regen = Num("Regen"),
+		armor = Num("Armor"),
+		damageReduction = Num("damage_reduction"),
+		speed = math.max(Num("speed"), 0.1),
+		reward = Num("resource_reward"),
+		clones = Parent ~= nil or Num("max_spawn_units") > 0,
+		invincible = Num("invincible") > 0,
+		bend = Num("last_reached_bend"),
+		nextBend = Num("next_bend"),
+		position = Pos,
+		prevPosition = Prev and Prev.position or Pos,
+		lastSeen = os.clock(),
+		velocity = 0,
+		mechanics = {},
+	}
+	local dt = os.clock() - (Prev and Prev.lastSeen or os.clock())
+	if dt > 0.01 then
+		E.velocity = (Pos - E.prevPosition).Magnitude / dt
+	end
+	for _, Name in ipairs({ "Regen", "Armor", "Flying", "Burst", "Soaring",
+		"Ice", "Fire", "Water", "Dark", "Lightning", "Air", "buildup_sanity" }) do
+		local V = Num(Name)
+		if V > 0 then
+			E.mechanics[#E.mechanics + 1] = Name .. "=" .. V
+		end
+	end
+	if E.shield > 0 then
+		E.mechanics[#E.mechanics + 1] = "shield=" .. E.shield
+	end
+	if E.clones then
+		E.mechanics[#E.mechanics + 1] = "clones"
+	end
+	-- effective HP: health + shields, armor and regen folded in
+	local Effective = E.hp + E.shield
+	if E.maxShield > 0 then
+		Effective = Effective + E.maxShield * 0.5
+	end
+	Effective = Effective * (1 + E.armor * 0.01)
+	if E.regen > 0 then
+		Effective = Effective + E.regen * 5
+	end
+	E.effectiveHP = Effective
+	return E
+end
+
+local function RefreshEnemies()
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if not Folder then
+		return
+	end
+	local Seen = {}
+	for _, Model in ipairs(Folder:GetChildren()) do
+		if not CollectionService:HasTag(Model, "player_units") then
+			local E = ReadEnemy(Model)
+			if E then
+				Seen[Model] = true
+				Placer.Enemies[Model] = E
+			end
+		end
+	end
+	for Model in pairs(Placer.Enemies) do
+		if not Seen[Model] then
+			Placer.Enemies[Model] = nil
+		end
+	end
+end
+
+local function WatchEnemies()
+	if Placer.EnemyWatching then
+		return
+	end
+	Placer.EnemyWatching = true
+	local function Poke()
+		task.defer(RefreshEnemies)
+	end
+	local function Hook(Folder)
+		if not Folder then
+			return
+		end
+		Folder.ChildAdded:Connect(Poke)
+		Folder.ChildRemoved:Connect(Poke)
+	end
+	Hook(workspace:FindFirstChild("_UNITS"))
+	workspace.ChildAdded:Connect(function(Child)
+		if Child.Name == "_UNITS" then
+			Hook(Child)
+		end
+	end)
+end
+
+-- How far along the pve path an enemy is, measured from the enemy spawn.
+-- Nearest path point is enough because path points already carry distance.
+local function EnemyPathProgress(E)
+	local Best, Progress = math.huge, 0
+	for _, Path in ipairs(GetPvePaths()) do
+		for _, Point in ipairs(Path.Points) do
+			local P = Point.position
+			local Dx, Dz = E.position.X - P.X, E.position.Z - P.Z
+			local D = Dx * Dx + Dz * Dz
+			if D < Best then
+				Best = D
+				Progress = tonumber(Point.distance_from_spawn) or 0
+			end
+		end
+	end
+	return Progress
+end
+
+-- Enemy snapshot for the defense diagnostic: counts and effective HP only.
+local function AssessEnemies()
+	RefreshEnemies()
+	local Count, TotalHP = 0, 0
+	for _, E in pairs(Placer.Enemies) do
+		Count += 1
+		TotalHP += E.effectiveHP
+	end
+	return { count = Count, totalHP = TotalHP }
+end
+
+-- Put every node marker back to its scan colour. Called when a match ends so
+-- retired/taken dots stop looking occupied, and on a fresh match reset.
+local function RestoreNodeColors()
+	for _, Node in ipairs(Placer.Nodes) do
+		if Node.Dot and Node.Dot.Parent and Node.BaseDotColor then
+			Node.Dot.Color = Node.BaseDotColor
+			Node.Dot.Transparency = Node.BaseDotTransparency or 0.55
+		end
+	end
+end
+
+-- Wipe every piece of match state when a new match / map begins. Without
+-- this, dots and used nodes from the previous match linger on the new map.
+-- KeepScan: the map was already scanned before the match (visual preview), so
+-- keep the nodes, lanes, path data and visuals and only reset match state.
+local function ResetForNewMatch(Reason, KeepScan)
+	local Keep = KeepScan == true and #Placer.Nodes > 0 and not Placer.NeedScan
+	if not Keep then
+		Placer.Nodes = {}
+		Placer.Lanes = {}
+	end
+	Placer.Used = {}
+	Placer.Occupied = {}
+	Placer.IncomeSamples = {}
+	Placer.IncomeLast = nil
+	Placer.IncomeStart = nil
+	Placer.WaveClock = { Wave = nil, Time = nil, Durations = {} }
+	Placer.Target = nil
+	Placer.UnitCenters = {}
+	Placer.Neighbors = {}
+	if not Keep then
+		Placer.NodeGrid = nil
+	end
+	Placer.OccupiedAt = 0
+	Placer.LastAttempt = {}
+	Placer.UpgradeFail = {}
+	Placer.UpgradeAt = setmetatable({}, { __mode = "k" })
+	Placer.UnitCounts = {}
+	Placer.UnitRanges = {}
+	Placer.FarmStats = {}
+	Placer.Enemies = setmetatable({}, { __mode = "k" })
+	Placer.EnemyWatch = setmetatable({}, { __mode = "k" })
+	Placer.ModelIds = setmetatable({}, { __mode = "k" })
+	if not Keep then
+		Placer.PathEnd = nil
+		Placer.PathPoints = {}
+		Placer.SetPathLines({})
+		Placer.ScanCenter = nil
+		Placer.ScanCenterDistance = 0
+		Placer.NeedScan = true
+		Placer.ScanTries = 0
+		Placer.LastScan = -100 -- allow an immediate rescan on the next tick
+		ClearScanVisuals()
+	else
+		RestoreNodeColors()
+	end
+	Placer.Queue = { Place = nil, Upgrade = nil, Upgrades = {} }
+	Placer.Fails = 0
+	Placer.LastWave = 0
+	HideIntentArrow()
+	Log("new match (%s) — nodes and state reset", tostring(Reason))
+end
+
+-- queue -------------------------------------------------------------------
+-- Recompute the next placement and the next upgrade every tick. The arrows
+-- preview these targets so the next action is visible before it happens.
+-- Economy planning ---------------------------------------------------------
+-- Highest-DPS purchase first. When it costs more than we have, compare the
+-- cost of WAITING (the target's damage is delayed) against the value of
+-- spending on something cheaper now (that purchase pays immediately, but the
+-- target is pushed back by cost / income seconds).
+
+-- measured income: money gained between ticks (spending is marked out, so only
+-- real gains are counted), averaged over a sliding window
+function Placer.TrackIncome()
+	local Now = os.clock()
+	local Money = GetMoney()
+	local Last = Placer.IncomeLast
+	if Money and Last and Money > Last.Money then
+		Placer.IncomeSamples[#Placer.IncomeSamples + 1] = { Time = Now, Gain = Money - Last.Money }
+	end
+	local Samples = Placer.IncomeSamples
+	local Cut = Now - PlaceConfig.IncomeWindow
+	while Samples[1] and Samples[1].Time < Cut do
+		table.remove(Samples, 1)
+	end
+
+	-- wave clock: how long a wave really lasts in this match
+	local Wave = GetWave()
+	local Clock = Placer.WaveClock
+	if Wave and Wave ~= Clock.Wave then
+		if Clock.Wave and Clock.Time and Wave > Clock.Wave then
+			local Each = (Now - Clock.Time) / (Wave - Clock.Wave)
+			if Each > 1 and Each < 300 then
+				Clock.Durations[#Clock.Durations + 1] = Each
+				if #Clock.Durations > 5 then
+					table.remove(Clock.Durations, 1)
+				end
+			end
+		end
+		Clock.Wave, Clock.Time = Wave, Now
+	end
+end
+
+-- call after spending so the next tick's delta is pure income
+function Placer.MarkMoney()
+	local Money = GetMoney()
+	if Money then
+		Placer.IncomeLast = { Money = Money, Time = os.clock() }
+		Placer.IncomeStart = Placer.IncomeStart or os.clock()
+	end
+end
+
+-- yen per second, or nil while there is not enough data
+function Placer.IncomeRate()
+	if not Placer.IncomeStart then
+		return nil
+	end
+	local Span = os.clock() - Placer.IncomeStart
+	if Span < PlaceConfig.IncomeMinSeconds then
+		return nil
+	end
+	local Total = 0
+	for _, Sample in ipairs(Placer.IncomeSamples) do
+		Total += Sample.Gain
+	end
+	local Rate = Total / math.min(Span, PlaceConfig.IncomeWindow)
+	return Rate > 0 and Rate or nil
+end
+
+function Placer.SecondsPerWave()
+	local Durations = Placer.WaveClock.Durations
+	if #Durations == 0 then
+		return PlaceConfig.SecondsPerWave
+	end
+	local Sum = 0
+	for _, Each in ipairs(Durations) do
+		Sum += Each
+	end
+	return Sum / #Durations
+end
+
+-- seconds a purchase is assumed to keep paying off
+function Placer.PlanHorizon()
+	local MaxWave = GetMaxWave() or PlaceConfig.EstimatedWaves
+	local Remaining = math.max(1, MaxWave - (GetWave() or 1))
+	return math.min(PlaceConfig.PlanHorizon, Remaining * Placer.SecondsPerWave())
+end
+
+local function PlaceGain(UnitId)
+	return DpsOf(StatsAt(UnitId, 0))
+end
+
+-- Payoff of a purchase: DPS added, for as long as it is live inside the
+-- planning horizon (time spent saving for it is dead time), per yen spent.
+local function ActionValue(Gain, Cost, Horizon, Money, Income)
+	if Gain <= 0 then
+		return 0
+	end
+	local Wait = Income and math.max(0, Cost - Money) / Income or 0
+	local Live = Horizon - Wait
+	if Live <= 0 then
+		return 0
+	end
+	return Gain * Live / math.max(Cost, 1)
+end
+
+-- The purchase we are building toward, ignoring money. Placing another strong
+-- unit competes head to head with upgrading an existing one: whichever adds
+-- the most effective DPS per yen (after waiting time) wins, so a weak unit's
+-- upgrade loses to a fresh high-DPS placement when that is the better buy.
+-- Effective DPS counts only what can actually reach the lane.
+function Placer.ChooseTarget(TopPlace, Upgrades)
+	local Money = GetMoney() or 0
+	local Income = Placer.IncomeRate()
+	local Horizon = Placer.PlanHorizon()
+
+	local PlaceTarget
+	if TopPlace then
+		local Cost = UnitCost(TopPlace.UnitId)
+		local Gain = PlaceGain(TopPlace.UnitId) * (TopPlace.Reaches and 1 or PlaceConfig.UnreachedGainFactor)
+		PlaceTarget = {
+			Kind = "place", Ref = TopPlace, UnitId = TopPlace.UnitId, Cost = Cost, Gain = Gain,
+			Value = ActionValue(Gain, Cost, Horizon, Money, Income) * PlaceConfig.PlacePreference,
+		}
+	end
+
+	local UpgradeTarget
+	for _, Entry in ipairs(Upgrades) do
+		if not IsFarmUnit(Entry.UnitId) and Entry.EffGain > 0 then
+			local Value = ActionValue(Entry.EffGain, Entry.Cost, Horizon, Money, Income)
+			if not UpgradeTarget or Value > UpgradeTarget.Value then
+				UpgradeTarget = {
+					Kind = "upgrade", Ref = Entry, UnitId = Entry.UnitId, Cost = Entry.Cost,
+					Gain = Entry.EffGain, Value = Value,
+				}
+			end
+		end
+	end
+
+	local Chosen
+	if PlaceTarget and (PlaceConfig.PlaceFirstUntilFull or (GetWave() or 1) <= PlaceConfig.EarlyPlaceWaves) then
+		Chosen = PlaceTarget -- fill the roster first: more units beats stronger units
+	elseif PlaceTarget and UpgradeTarget then
+		Chosen = PlaceTarget.Value >= UpgradeTarget.Value and PlaceTarget or UpgradeTarget
+	else
+		Chosen = PlaceTarget or UpgradeTarget
+	end
+
+	if Chosen then
+		local Key = Chosen.Kind .. ":" .. tostring(Chosen.UnitId)
+		if Key ~= Placer.LastTargetKey then
+			Placer.LastTargetKey = Key
+			local Other = Chosen == PlaceTarget and UpgradeTarget or PlaceTarget
+			Log("target: %s %s (value %.3f, +%.1f dps, cost %d)%s", Chosen.Kind, tostring(Chosen.UnitId),
+				Chosen.Value, Chosen.Gain, Chosen.Cost,
+				Other and (" over %s %s (value %.3f)"):format(Other.Kind, tostring(Other.UnitId), Other.Value) or "")
+		end
+	end
+	return Chosen
+end
+
+function Placer.IsTarget(Kind, Ref)
+	local Target = Placer.Target
+	if not Target or Target.Kind ~= Kind then
+		return false
+	end
+	if Kind == "upgrade" then
+		return Target.Ref.Model == Ref.Model
+	end
+	return Target.Ref == Ref
+end
+
+function Placer.ClearTarget(Kind, Ref)
+	if Placer.IsTarget(Kind, Ref) then
+		Placer.Target = nil
+	end
+end
+
+-- Should this purchase happen now, or keep saving for the target?
+--   delay = how much later the target is bought if we spend `Cost` now
+--   spend when Gain * horizon >= TargetGain * delay  (damage added vs delayed)
+function Placer.AllowSpend(Kind, Ref, UnitId, Cost, Gain)
+	local Target = Placer.Target
+	if not PlaceConfig.WaitEnabled or not Target or Placer.IsTarget(Kind, Ref) then
+		return true
+	end
+	local Money = GetMoney() or 0
+	local Income = Placer.IncomeRate()
+	local function Hold(Why)
+		if os.clock() - Placer.LastWaitLog > 5 then
+			Placer.LastWaitLog = os.clock()
+			Log("saving for %s %s (cost %d, have %d): holding %s %s — %s",
+				Target.Kind, tostring(Target.UnitId), Target.Cost, Money, Kind, tostring(UnitId), Why)
+		end
+		return false
+	end
+
+	if not Income then
+		-- no income data yet: never raid money the target already has
+		return Money < Target.Cost or Money - Cost >= Target.Cost
+	end
+	local WaitNow = math.max(0, Target.Cost - Money) / Income
+	local WaitAfter = math.max(0, Target.Cost - (Money - Cost)) / Income
+	local Delay = WaitAfter - WaitNow
+	if Delay <= 0 then
+		return true -- still enough left for the target: free to spend
+	end
+	if WaitNow > PlaceConfig.MaxWaitSeconds then
+		return true -- target is too far away to be worth saving for
+	end
+	if Placer.Defense and not Placer.Defense.stable then
+		return true -- lane is leaking: spend now
+	end
+
+	local Horizon = Placer.PlanHorizon()
+	if IsFarmUnit(UnitId) then
+		-- economy purchase: fine if it pays itself back well inside the horizon
+		local PaybackSeconds
+		if Kind == "upgrade" then
+			PaybackSeconds = FarmRoi(UnitId, Ref.Level, Cost).payback * Placer.SecondsPerWave()
+		else
+			local PerWave = tonumber((StatsAt(UnitId, 0) or {}).farm_amount) or 0
+			PaybackSeconds = PerWave > 0 and Cost / PerWave * Placer.SecondsPerWave() or math.huge
+		end
+		if PaybackSeconds <= Horizon * PlaceConfig.FarmSpendPaybackFactor then
+			return true
+		end
+		return Hold(("farm payback %.0fs is too slow"):format(PaybackSeconds))
+	end
+	if (Gain or 0) * Horizon >= Target.Gain * Delay then
+		return true
+	end
+	return Hold(("it would delay the target %.1fs for %.1f dps"):format(Delay, Gain or 0))
+end
+
+local function ComputePlaceCandidate()
+	local Now = os.clock()
+	RefreshUnitRanges()
+	local Counts = {}
+	for _, Model in ipairs(PlayerUnitModels()) do
+		local UnitId = ModelUnitId(Model)
+		if UnitId then
+			Counts[UnitId] = (Counts[UnitId] or 0) + 1
+		end
+	end
+	Placer.UnitCounts = Counts
+	-- Count combat vs farm units to enforce "first defenders, then farms".
+	local CombatCount = 0
+	for Id, Count in pairs(Counts) do
+		if not IsFarmUnit(Id) then
+			CombatCount = CombatCount + Count
+		end
+	end
+	local FarmCount = 0
+	for Id, Count in pairs(Counts) do
+		if IsFarmUnit(Id) then
+			FarmCount = FarmCount + Count
+		end
+	end
+	local MinCombat = math.clamp(#GetPvePaths() + 2,
+		PlaceConfig.MinCombatBeforeFarms, PlaceConfig.MaxCombatBeforeFarms)
+	-- Farms go down after the first combat units and up to the quota, even if
+	-- defense currently reads WEAK — otherwise they never get placed at all.
+	local FarmsAllowed = CombatCount >= MinCombat and FarmCount < PlaceConfig.FarmQuota
+	local BestFarm, BestCombat, TopCombat
+	for _, Uuid in ipairs(EquippedUuids()) do
+		local UnitId = UnitIdForUuid(Uuid)
+		if UnitId and Units[UnitId] and (not IsFarmUnit(UnitId) or FarmsAllowed) then
+			local CanRetry = Now - (Placer.LastAttempt[Uuid] or 0) > PlaceConfig.RetryEvery
+			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry then
+				local Affordable = CanAfford(UnitCost(UnitId))
+				local Pool, Farm = NodesFor(UnitId)
+				local Node, Reaches = PickNode(Pool, UnitId, Farm)
+				if Node then
+					local Cf = Node.CFrame
+					if Placer.Grid and Placer.Grid.get_closest_grid_point then
+						local Ok, Snapped = pcall(Placer.Grid.get_closest_grid_point, Cf)
+						if Ok and typeof(Snapped) == "CFrame" then
+							Cf = Snapped
+						end
+					end
+					local Landing = Placer.NearestNode(Cf.Position)
+					if not (Landing and Placer.NodeBusy(Landing)) then
+						local Score = UnitPlaceScore(UnitId) + NodeFitScore(Node, UnitId, Farm)
+						local Entry = {
+							Uuid = Uuid, UnitId = UnitId, Node = Node,
+							Cf = Cf, Landing = Landing, Score = Score,
+							Reaches = Reaches, Affordable = Affordable,
+						}
+						if Farm then
+							if Affordable and (not BestFarm or Score > BestFarm.Score) then
+								BestFarm = Entry
+							end
+						else
+							-- a unit that reaches the lane always beats one that doesn't
+							local function Better(Current)
+								return not Current or (Entry.Reaches and not Current.Reaches)
+									or (Entry.Reaches == Current.Reaches and Score > Current.Score)
+							end
+							if Affordable and Better(BestCombat) then
+								BestCombat = Entry
+							end
+							if Better(TopCombat) then
+								TopCombat = Entry -- best combat placement regardless of money
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	-- An unlocked farm compounds for the rest of the match, then plain combat.
+	return (FarmsAllowed and BestFarm) or BestCombat, TopCombat
+end
+
+local function UpgradeCandidates()
+	local Now = os.clock()
+	local List = {}
+	for _, Model in ipairs(PlayerUnitModels()) do
+		local UnitId = ModelUnitId(Model)
+		local Level = StatValue(Model, "upgrade")
+		local MaxLevel = StatValue(Model, "max_upgrade")
+		if UnitId and Level ~= nil and (MaxLevel == nil or Level < MaxLevel) then
+			local Cost = NextUpgradeCost(UnitId, Level)
+			if Cost ~= nil and Now - (Placer.UpgradeFail[Model] or 0) >= PlaceConfig.UpgradeRetry then
+				-- money is NOT filtered here: the top entry may be the thing we
+				-- are saving for. Callers check affordability when they spend.
+				local Gain = DpsOf(StatsAt(UnitId, Level + 1)) - DpsOf(StatsAt(UnitId, Level))
+				-- effective gain: scaled by how much lane the unit can really reach
+				local EffGain = Gain
+				if not IsFarmUnit(UnitId) then
+					local Pos = UnitHitboxPosition(Model)
+					if Pos then
+						local Range = Placer.UnitRanges[UnitId] or PlaceConfig.DefaultRange
+						local Fraction = math.min(1, Placer.PathCoverage(Pos, Range) / (Range * 1.2))
+						EffGain = Gain * (0.2 + 0.8 * Fraction)
+					end
+				end
+				List[#List + 1] = {
+					Model = Model, UnitId = UnitId, Level = Level,
+					Cost = Cost, Score = UpgradeScore(Model, UnitId, Level, Cost),
+					Position = UnitAnchorPosition(Model),
+					Gain = Gain, EffGain = EffGain,
+					Affordable = CanAfford(Cost),
+				}
+			end
+		end
+	end
+	table.sort(List, function(A, B)
+		return A.Score > B.Score
+	end)
+	return List
+end
+
+local function ComputeQueue()
+	RefreshFarmStats()
+	Placer.EnemyInfo = AssessEnemies()
+	Placer.Defense = AssessDefense()
+	if os.clock() - Placer.LastDefenseDiag > 15 then
+		Placer.LastDefenseDiag = os.clock()
+		local D = Placer.Defense
+		Log("defense: dps=%.1f hp=%.0f kill=%.1fs transit=%.1fs safety=%.0f path=%.0f -> %s",
+			D.dps, D.hp, D.killTime, D.transitTime, D.safety,
+			GetPathLength() or PlaceConfig.PathLength, D.stable and "STABLE" or "WEAK")
+		local EI = Placer.EnemyInfo
+		Log("enemies: alive=%d effHP=%.0f", EI.count, EI.totalHP)
+	end
+	local Place, TopPlace = ComputePlaceCandidate()
+	local Upgrades = UpgradeCandidates()
+	Placer.Target = Placer.ChooseTarget(TopPlace, Upgrades)
+	Placer.Queue = { Place = Place, Upgrade = Upgrades[1], Upgrades = Upgrades }
+	if PlaceConfig.ShowVisuals and PlaceConfig.ShowQueueArrows then
+		SetIntentArrow("place", Place and Place.Cf.Position or nil)
+		SetIntentArrow("upgrade", Upgrades[1] and Upgrades[1].Position or nil)
+	else
+		HideIntentArrow()
+	end
+end
+
+function Placer.PlaceOnce(Candidate)
 	Placer.RefreshOccupied()
-	local Pool, Farm = NodesFor(UnitId)
-	local Node = PickNode(Pool, Farm)
+	local Node = Candidate.Node
 	if not Node then
 		return false, "nonode"
 	end
+	local Cf, Uuid, UnitId = Candidate.Cf, Candidate.Uuid, Candidate.UnitId
+	-- a node under a unit's hitbox is only busy while that hitbox exists, so
+	-- it is skipped, not retired (retiring would burn it after the unit dies)
 	if Placer.NodeBusy(Node) then
-		Placer.Retire(Node)
 		return false, "occupied"
 	end
-	local Cf = Node.CFrame
-	if Placer.Grid and Placer.Grid.get_closest_grid_point then
-		local Ok, Snapped = pcall(Placer.Grid.get_closest_grid_point, Cf)
-		if Ok and typeof(Snapped) == "CFrame" then
-			Cf = Snapped
-		end
-	end
 	-- the grid snap can land on a node that already has a unit
-	local Landing = Placer.NearestNode(Cf.Position)
-	if Landing and (Placer.Used[Landing] or Placer.NodeBusy(Landing)) then
-		Placer.Retire(Node)
+	local Landing = Candidate.Landing or Placer.NearestNode(Cf.Position)
+	if Landing and Placer.NodeBusy(Landing) then
+		return false, "occupied"
+	end
+	-- exact-point check against the live _hitbox cylinders at the CFrame we send
+	if Placer.PointInAnyHitbox(Cf.Position) then
 		return false, "occupied"
 	end
 
-	ShowIntentArrow("place", Cf.Position)
+	-- money may have changed since the queue was built (e.g. an upgrade in
+	-- this same tick) — never send a spawn we can't pay for
+	if not CanAfford(UnitCost(UnitId)) then
+		return false, "nomoney"
+	end
+	-- final guard: the scene may have changed since the scan (new enemy/unit
+	-- hitboxes, bounds, road). Never send a CFrame the game would reject.
+	if IsSpotBlocked(Cf.Position) then
+		Placer.Retire(Node, PlaceConfig.BlockedCooldown)
+		return false, "blocked"
+	end
+
 	local Before = #PlayerUnitModels()
 	local Ok, Result = CallWithTimeout(10, InvokeServer, "spawn_unit", Uuid, Cf)
-	HideIntentArrow()
 	if not (Ok and Result) then
 		-- a rejected spawn retires the node immediately: the next attempt
 		-- must land somewhere else, not hammer the same spot
-		Node.Bad = true
-		Placer.Retire(Node)
+		Placer.Retire(Node, PlaceConfig.RejectCooldown)
 		return false, "server"
 	end
 	-- the server accepted it; give the model a moment to replicate
@@ -4224,17 +5801,20 @@ function Placer.PlaceOnce(Uuid, UnitId)
 	repeat
 		task.wait(0.1)
 	until #PlayerUnitModels() > Before or os.clock() >= Deadline
+	-- short claim covers replication lag; the hitbox takes over from here and
+	-- the claim is dropped as soon as the unit's hitbox owns the node
 	Placer.Retire(Node)
 	if Landing then
 		Placer.Retire(Landing)
 	end
+	Placer.RefreshOccupied(true)
 	Log("placed %s", UnitId)
 	return true
 end
 
-local function TryPlace(Uuid, UnitId)
-	for _ = 1, math.max(1, tonumber(Config.PlaceRetries) or 1) do
-		local Placed, Reason = Placer.PlaceOnce(Uuid, UnitId)
+local function TryPlace(Candidate)
+	for _ = 1, math.max(1, tonumber(PlaceConfig.PlaceRetries) or 1) do
+		local Placed, Reason = Placer.PlaceOnce(Candidate)
 		if Reason ~= "occupied" then
 			return Placed, Reason
 		end
@@ -4246,7 +5826,7 @@ end
 -- match starts, and a failed run of placements also triggers a fresh scan
 local function EnsureScan()
 	local Missing = Placer.NeedScan or #Placer.Nodes == 0
-	local TooManyFails = Placer.Fails >= Config.RescanAfterFails
+	local TooManyFails = Placer.Fails >= PlaceConfig.RescanAfterFails
 	if not Missing and not TooManyFails then
 		return
 	end
@@ -4274,49 +5854,66 @@ local function EnsureScan()
 end
 
 local function RunUpgrades()
-	local Farm, Other, Buff = {}, {}, {}
-	for _, Model in ipairs(PlayerUnitModels()) do
-		local UnitId = ModelUnitId(Model)
-		if UnitId and IsFarmUnit(UnitId) then
-			Farm[#Farm + 1] = Model
-		elseif UnitId and IsBuffUnit(UnitId) then
-			Buff[#Buff + 1] = Model
+	-- same invocation as auto_place.lua: direct pcall around the endpoint,
+	-- not the CallWithTimeout task.spawn wrapper. Recompute the candidates here
+	-- so upgrades never depend on the placement queue being built first.
+	local Now = os.clock()
+	local Candidates = UpgradeCandidates()
+	-- Farms first: every farm COPY must be upgraded in turn, not just the one
+	-- that happens to score highest. Combat upgrades fill the remaining slots.
+	local Farms, Combat, ToTry = {}, {}, {}
+	for _, Target in ipairs(Candidates) do
+		if IsFarmUnit(Target.UnitId) then
+			Farms[#Farms + 1] = Target
 		else
-			Other[#Other + 1] = Model
+			Combat[#Combat + 1] = Target
 		end
 	end
-	local Now = os.clock()
-	for _, Tier in ipairs({ Farm, Other, Buff }) do
-		for _, Model in ipairs(Tier) do
-			local UnitId = ModelUnitId(Model)
-			local Level = StatValue(Model, "upgrade")
-			local MaxLevel = StatValue(Model, "max_upgrade")
-			if UnitId and Level ~= nil and (MaxLevel == nil or Level < MaxLevel) then
-				local Cost = NextUpgradeCost(UnitId, Level)
-				if Cost ~= nil then
-					local Money = GetMoney()
-					if Money ~= nil and Money < Cost then
-						return
-					end
-					if Now - (Placer.UpgradeFail[Model] or 0) >= Config.UpgradeRetry then
-						local OkPivot, Pivot = pcall(function()
-							return Model:GetPivot()
-						end)
-						if OkPivot then
-							ShowIntentArrow("upgrade", Pivot.Position)
-						end
-						local Ok, Result = CallWithTimeout(10, InvokeServer, "upgrade_unit_ingame", Model)
-						HideIntentArrow()
-						if Ok and Result then
-							Placer.UpgradeFail[Model] = nil
-							task.wait(Config.ActionDelay)
-						else
-							Placer.UpgradeFail[Model] = Now
-						end
-					end
+	for _, Target in ipairs(Farms) do
+		ToTry[#ToTry + 1] = Target
+	end
+	for _, Target in ipairs(Combat) do
+		ToTry[#ToTry + 1] = Target
+	end
+	local Limit = math.max(1, tonumber(PlaceConfig.UpgradesPerTick) or 1) + #Farms
+	local Attempted = 0
+	for _, Target in ipairs(ToTry) do
+		if Attempted >= Limit then
+			break
+		end
+		local Model = Target.Model
+		-- farm upgrades pay for themselves: never hold them behind a saved
+		-- combat target, so every farm copy gets upgraded in turn
+		local AllowFarm = IsFarmUnit(Target.UnitId)
+			or Placer.AllowSpend("upgrade", Target, Target.UnitId, Target.Cost, Target.EffGain)
+		if Model and Model.Parent and CanAfford(Target.Cost)
+			and Now - (Placer.UpgradeFail[Model] or 0) >= PlaceConfig.UpgradeRetry
+			and AllowFarm then
+			Attempted += 1
+			local Ok, Result = pcall(function()
+				return InvokeServer("upgrade_unit_ingame", Model)
+			end)
+			-- the endpoint frequently returns nil on a successful upgrade —
+			-- only an explicit false means the server rejected it
+			if Ok and Result ~= false then
+				Placer.UpgradeFail[Model] = nil
+				Placer.UpgradeAt[Model] = os.clock()
+				Placer.ClearTarget("upgrade", Target)
+				Log("upgraded %s to lvl %s", tostring(Target.UnitId), tostring(Target.Level + 1))
+				task.wait(PlaceConfig.ActionDelay)
+			else
+				Placer.UpgradeFail[Model] = Now
+				if Now - Placer.LastUpgradeWarn > 10 then
+					Placer.LastUpgradeWarn = Now
+					Log("upgrade rejected: %s lvl %s (ok=%s res=%s)",
+						tostring(Target.UnitId), tostring(Target.Level), tostring(Ok), tostring(Result))
 				end
 			end
 		end
+	end
+	if Now - Placer.LastUpgradeDiag > 10 then
+		Placer.LastUpgradeDiag = Now
+		Log("upgrade pass: %d candidates, %d attempted", #Candidates, Attempted)
 	end
 end
 
@@ -4330,9 +5927,20 @@ local function WatchUnits()
 		return
 	end
 	WatchingUnits = true
+	local Deferred = false
 	local function Poke()
 		local Now = os.clock()
 		if Now - LastUnitPoke < 0.5 then
+			-- never drop a change: refresh once the debounce window ends, so a
+			-- unit sold right after another event still frees its node
+			if not Deferred then
+				Deferred = true
+				task.delay(0.5, function()
+					Deferred = false
+					LastUnitPoke = os.clock()
+					Placer.RefreshOccupied(true)
+				end)
+			end
 			return
 		end
 		LastUnitPoke = Now
@@ -4343,6 +5951,11 @@ local function WatchUnits()
 	local function HookFolder(Folder)
 		Folder.ChildAdded:Connect(Poke)
 		Folder.ChildRemoved:Connect(Poke)
+		Folder.DescendantRemoving:Connect(function(Instance_)
+			if Instance_.Name == "_hitbox" then
+				task.defer(Poke)
+			end
+		end)
 	end
 	local Folder = workspace:FindFirstChild("_UNITS")
 	if Folder then
@@ -4355,49 +5968,6 @@ local function WatchUnits()
 	end)
 	CollectionService:GetInstanceAddedSignal("player_units"):Connect(Poke)
 	CollectionService:GetInstanceRemovedSignal("player_units"):Connect(Poke)
-end
-
-local function PlacementTick()
-	WatchUnits()
-	EnsureScan()
-	if #Placer.Nodes == 0 then
-		return
-	end
-	Placer.RefreshOccupied()
-	local Equipped = EquippedUuids()
-	if #Equipped == 0 and os.clock() - Placer.LastWarn > 15 then
-		Placer.LastWarn = os.clock()
-		Log("no equipped units found in the profile — nothing to place")
-	end
-	local Counts = {}
-	for _, Model in ipairs(PlayerUnitModels()) do
-		local UnitId = ModelUnitId(Model)
-		if UnitId then
-			Counts[UnitId] = (Counts[UnitId] or 0) + 1
-		end
-	end
-	for _, Uuid in ipairs(Equipped) do
-		local UnitId = UnitIdForUuid(Uuid)
-		if UnitId and Units[UnitId] then
-			local CanRetry = os.clock() - (Placer.LastAttempt[Uuid] or 0) > Config.RetryEvery
-			local Money = GetMoney()
-			if (Counts[UnitId] or 0) < SpawnCap(UnitId) and CanRetry and (Money == nil or Money >= UnitCost(UnitId)) then
-				local Placed, Reason = TryPlace(Uuid, UnitId)
-				if Placed then
-					Counts[UnitId] = (Counts[UnitId] or 0) + 1
-					Placer.LastAttempt[Uuid] = nil
-					Placer.Fails = 0
-					task.wait(Config.ActionDelay)
-				else
-					Placer.LastAttempt[Uuid] = os.clock()
-					if Reason ~= "nonode" then
-						Placer.Fails = Placer.Fails + 1
-					end
-				end
-			end
-		end
-	end
-	RunUpgrades()
 end
 
 -- match state ------------------------------------------------------------
@@ -4413,6 +5983,132 @@ end
 
 local function GameFinished()
 	return DataFlag("GameFinished")
+end
+
+local function PlacementTick()
+	WatchUnits()
+	WatchEnemies()
+
+	-- Full reset when a new match starts, the map changes, or the wave counter
+	-- rolls back. Covers replay / next-match / teleport between maps.
+	local Active = MatchActive()
+	if Active and not Placer.LastMatchActive then
+		ResetForNewMatch("game started", true)
+	end
+	Placer.LastMatchActive = Active
+	local MapId = tostring(Loader.LevelData and Loader.LevelData.id or "")
+	if MapId ~= "" and Placer.LastMapId and MapId ~= Placer.LastMapId then
+		ResetForNewMatch("map changed")
+	end
+	Placer.LastMapId = MapId
+	local WaveNow = GetWave() or 0
+	if WaveNow > 0 and WaveNow < Placer.LastWave then
+		ResetForNewMatch("wave reset")
+	end
+	Placer.LastWave = WaveNow
+
+	EnsureScan()
+	Placer.RefreshOccupied()
+	Placer.TrackIncome()
+	if #EquippedUuids() == 0 and os.clock() - Placer.LastWarn > 15 then
+		Placer.LastWarn = os.clock()
+		Log("no equipped units found in the profile — nothing to place")
+	end
+
+	-- Build both sides of the queue first, then spend in wave-dependent order:
+	-- early waves build the roster (placement first), later waves compound
+	-- power (upgrades first). Both still require money rechecks at the endpoint.
+	ComputeQueue()
+	local Place = Placer.Queue.Place
+	local Wave = GetWave() or 1
+	local PlaceFirst = Wave <= PlaceConfig.EarlyPlaceWaves or PlaceConfig.PlaceFirstUntilFull
+		or (Placer.Target ~= nil and Placer.Target.Kind == "place")
+
+	local function SpendOnPlacement()
+		if not Place then
+			return
+		end
+		if not Placer.AllowSpend("place", Place, Place.UnitId, UnitCost(Place.UnitId), PlaceGain(Place.UnitId)) then
+			return -- saving for a higher-priority purchase
+		end
+		local Placed, Reason = TryPlace(Place)
+		if Placed then
+			Placer.ClearTarget("place", Place)
+			Placer.LastAttempt[Place.Uuid] = nil
+			Placer.Fails = 0
+			task.wait(PlaceConfig.ActionDelay)
+		else
+			Placer.LastAttempt[Place.Uuid] = os.clock()
+			if Reason ~= "nonode" and Reason ~= "nomoney" then
+				Placer.Fails = Placer.Fails + 1
+			end
+		end
+	end
+
+	if PlaceFirst then
+		SpendOnPlacement()
+	end
+	RunUpgrades()
+	if not PlaceFirst then
+		SpendOnPlacement()
+	end
+	Placer.MarkMoney()
+end
+
+-- Visual preview: with ShowVisuals on, the scan and its markers appear as soon
+-- as the script runs inside a map, before the match starts. Nothing is placed
+-- or upgraded here; PlacementTick only runs once the match is active.
+local function PreviewTick()
+	if not PlaceConfig.ShowVisuals then
+		return
+	end
+	if not (Loader.LevelData and workspace:FindFirstChild("_road")) then
+		return -- lobby / map not loaded yet
+	end
+	local MapId = tostring(Loader.LevelData.id or "")
+	if MapId ~= "" and Placer.LastMapId and MapId ~= Placer.LastMapId then
+		ResetForNewMatch("map changed")
+	end
+	Placer.LastMapId = MapId
+	EnsureScan()
+end
+
+-- initialise the new placement system ---------------------------------------
+Placer.Core = Loader.load_core_service(nil, "PlacementCore")
+Placer.Paths = Loader.load_core_service(nil, "PathService")
+Placer.Grid = SafeLoad("load_client_service", "PlacementServiceClient")
+HideIntentArrow()
+
+local function StartAutoPlace()
+	task.spawn(function()
+		while true do
+			local Active = MatchActive()
+			if Active then
+				local Ok, Err = pcall(PlacementTick)
+				if not Ok then
+					warn("[AA Kaitun] placement error: " .. tostring(Err))
+				end
+			elseif Placer.LastMatchActive then
+				-- match just ended: free all node state and restore the dots
+				Placer.Used = {}
+				Placer.Occupied = {}
+				Placer.UnitCenters = {}
+				Placer.Neighbors = {}
+				Placer.Target = nil
+				Placer.LastMatchActive = false
+				RestoreNodeColors()
+				HideIntentArrow()
+				Log("match finished — node markers restored")
+			end
+			if not Active then
+				local Ok, Err = pcall(PreviewTick)
+				if not Ok then
+					warn("[AA Kaitun] preview error: " .. tostring(Err))
+				end
+			end
+			task.wait(0.5)
+		end
+	end)
 end
 
 local VoteClock = { Start = 0, Skip = 0 }
@@ -4527,7 +6223,7 @@ end
 local MatchSettingsSent = {}
 local function ApplyMatchSettings()
 	local Folder = Player:FindFirstChild("_settings")
-	for Name, Want in pairs({ show_overheads = false, disable_effects = true }) do
+	for Name, Want in pairs({ show_overheads = false, disable_effects = true, disable_auto_open_overhead = true }) do
 		local Flag = Folder and Folder:FindFirstChild(Name)
 		if Flag and Flag:IsA("BoolValue") then
 			if Flag.Value ~= Want then
@@ -4569,18 +6265,8 @@ RunInGame = function()
 	local LastResetCheck = 0
 	local ResetLeaveAt = nil
 
-	-- placement / upgrades on their own thread
-	task.spawn(function()
-		while true do
-			if MatchActive() then
-				local Ok, Err = pcall(PlacementTick)
-				if not Ok then
-					warn("[AA Kaitun] placement error: " .. tostring(Err))
-				end
-			end
-			task.wait(0.5)
-		end
-	end)
+	-- placement / upgrades / preview run on their own thread (new system)
+	StartAutoPlace()
 
 	while true do
 		local Ctx = CurrentContext()
@@ -4591,13 +6277,6 @@ RunInGame = function()
 				WasActive = true
 				LoseVoted = false
 				Handled = false
-				-- the placement thread scans (and keeps retrying until nodes exist)
-				Placer.Nodes = {}
-				Placer.Used = {}
-				Placer.NeedScan = true
-				Placer.ScanTries = 0
-				Placer.Fails = 0
-				Placer.LastScan = 0
 			end
 
 			local LoseWave = LoseWaveFor(Ctx)
