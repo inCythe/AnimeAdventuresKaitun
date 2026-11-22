@@ -4029,7 +4029,9 @@ local function ModelUnitId(Model)
 	return Id
 end
 
-local function PickNode(Pool, Farm, PreferPath)
+-- one score for every unit kind: close to the lane center AND close to the
+-- enemy path (squared stud distances, summed)
+local function PickNode(Pool, Farm)
 	local Best, BestScore
 	for _, Node in ipairs(Pool) do
 		local ZoneOk
@@ -4039,10 +4041,8 @@ local function PickNode(Pool, Farm, PreferPath)
 			ZoneOk = Node.KindOk
 		end
 		if Node.Valid and not Node.Bad and not Placer.Used[Node] and ZoneOk then
-			local Score = Node.Gx * Node.Gx + Node.Gz * Node.Gz
-			if PreferPath then
-				Score = Score * 1000 + Node.PathDist
-			end
+			local PathDist = Node.PathDist or 0
+			local Score = Node.Gx * Node.Gx + Node.Gz * Node.Gz + PathDist * PathDist
 			if not BestScore or Score < BestScore then
 				Best, BestScore = Node, Score
 			end
@@ -4060,7 +4060,7 @@ local function NodesFor(UnitId)
 			Pool[#Pool + 1] = Node
 		end
 	end
-	return Pool, Farm, (not Farm) and Terrain == "hill"
+	return Pool, Farm
 end
 
 -- nearest scanned node to a world position (used or not), no spacing radius:
@@ -4108,8 +4108,8 @@ end
 
 function Placer.PlaceOnce(Uuid, UnitId)
 	Placer.RefreshOccupied()
-	local Pool, Farm, PreferPath = NodesFor(UnitId)
-	local Node = PickNode(Pool, Farm, PreferPath)
+	local Pool, Farm = NodesFor(UnitId)
+	local Node = PickNode(Pool, Farm)
 	if not Node then
 		return false, "nonode"
 	end
@@ -4364,9 +4364,12 @@ local function FinishMatch(Ctx)
 	end
 
 	if Decision == "Replay" then
+		-- story matches advance with "next_story"; "replay" would redo the
+		-- same node forever. Other modes (infinite etc.) only have replay.
+		local Vote = Ctx.Kind == "Story1" and "next_story" or "replay"
 		local Deadline = os.clock() + 10
 		while os.clock() < Deadline and not Transitioned() do
-			pcall(FireEndpoint, "set_game_finished_vote", "replay")
+			pcall(FireEndpoint, "set_game_finished_vote", Vote)
 			task.wait(0.5)
 		end
 	end
