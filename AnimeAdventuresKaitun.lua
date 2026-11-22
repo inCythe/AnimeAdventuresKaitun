@@ -4364,12 +4364,9 @@ local function FinishMatch(Ctx)
 	end
 
 	if Decision == "Replay" then
-		-- story matches advance with "next_story"; "replay" would redo the
-		-- same node forever. Other modes (infinite etc.) only have replay.
-		local Vote = Ctx.Kind == "Story1" and "next_story" or "replay"
 		local Deadline = os.clock() + 10
 		while os.clock() < Deadline and not Transitioned() do
-			pcall(FireEndpoint, "set_game_finished_vote", Vote)
+			pcall(FireEndpoint, "set_game_finished_vote", "replay")
 			task.wait(0.5)
 		end
 	end
