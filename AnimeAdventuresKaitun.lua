@@ -194,7 +194,7 @@ local Config = {
 	TraitKeep = { "unique" },
 	TraitSources = { "token", "remnant", "remnant_ltd" },
 	TraitMinResources = 0,
-	MaxTraitRolls = 200,
+	MaxTraitRolls = 999,
 	TraitRollDelay = 0.25,
 	TraitChangeTimeout = 5,
 }
