@@ -402,50 +402,9 @@ local function CountEntries(Table)
 end
 
 local CallWithTimeout -- defined below
-local CallEndpointOnce -- defined below
-
--- One-shot endpoint ledger ------------------------------------------------
--- Every request goes through CallEndpointOnce. A request is identified by its
--- name + arguments (+ an optional sequence for deliberate repeats such as
--- separate trait rolls) and is sent at most once per generation. Polling loops
--- keep observing state but never fire the same remote twice. Rejected sends
--- are not cached, so a failed request can still be retried.
-local EndpointLedger = {}
-local EndpointGeneration = 0
-local EndpointSequence = 0
-
-local function ResetEndpointLedger()
-	EndpointGeneration += 1
-	table.clear(EndpointLedger)
-end
-
-local function NextEndpointSequence()
-	EndpointSequence += 1
-	return EndpointSequence
-end
-
-local function EndpointKey(Name, Seq, Args)
-	local Parts = { tostring(EndpointGeneration), tostring(Name), tostring(Seq or "") }
-	for Index = 1, Args.n do
-		local Value = Args[Index]
-		if type(Value) == "table" then
-			local Items = {}
-			for Key, Field in pairs(Value) do
-				Items[#Items + 1] = tostring(Key) .. "=" .. tostring(Field)
-			end
-			table.sort(Items)
-			Parts[#Parts + 1] = "{" .. table.concat(Items, ",") .. "}"
-		elseif typeof(Value) == "Instance" then
-			Parts[#Parts + 1] = Value:GetFullName()
-		else
-			Parts[#Parts + 1] = tostring(Value)
-		end
-	end
-	return table.concat(Parts, "|")
-end
 
 local function Invoke(Name, ...)
-	local Ok, Result = CallEndpointOnce(Name, 10, InvokeServer, nil, Name, ...)
+	local Ok, Result = CallWithTimeout(10, InvokeServer, Name, ...)
 	if not Ok then
 		Log("%s failed: %s", Name, tostring(Result))
 		return nil, false
@@ -454,7 +413,7 @@ local function Invoke(Name, ...)
 end
 
 -- run a call on its own thread; some remotes never return on bad arguments
-local function RunCall(Timeout, Fn, ...)
+CallWithTimeout = function(Timeout, Fn, ...)
 	local Args = table.pack(...)
 	local Done, Ok, Result = false, nil, nil
 	task.spawn(function()
@@ -471,33 +430,6 @@ local function RunCall(Timeout, Fn, ...)
 	return Ok, Result
 end
 
--- Send once, then return the cached result for any identical repeat. The
--- third return value says whether this call actually sent a request.
-CallEndpointOnce = function(Name, Timeout, Fn, Seq, ...)
-	local Args = table.pack(...)
-	local Key = EndpointKey(Name, Seq, Args)
-	local Cached = EndpointLedger[Key]
-	if Cached then
-		return Cached[1], Cached[2], false
-	end
-	local Ok, Result = RunCall(Timeout, Fn, table.unpack(Args, 1, Args.n))
-	if Ok and Result ~= false then
-		EndpointLedger[Key] = { Ok, Result }
-	end
-	return Ok, Result, true
-end
-
--- Every InvokeServer call in the script goes through this wrapper, so polling
--- loops and retries share the ledger instead of spamming the same remote.
-CallWithTimeout = function(Timeout, Fn, ...)
-	if Fn == InvokeServer then
-		local Args = table.pack(...)
-		return CallEndpointOnce(tostring(Args[1]), Timeout, InvokeServer, nil,
-			table.unpack(Args, 1, Args.n))
-	end
-	return RunCall(Timeout, Fn, ...)
-end
-
 local function GetEndpoint(Name)
 	local Root = ReplicatedStorage:FindFirstChild("endpoints")
 	Root = Root and Root:FindFirstChild("client_to_server")
@@ -508,9 +440,9 @@ local function FireEndpoint(Name, ...)
 	local Remote = GetEndpoint(Name)
 	if Remote and Remote:IsA("RemoteFunction") then
 		local Args = table.pack(...)
-		return CallEndpointOnce(Name, 10, function()
+		return CallWithTimeout(10, function()
 			return Remote:InvokeServer(table.unpack(Args, 1, Args.n))
-		end, nil, table.unpack(Args, 1, Args.n))
+		end)
 	end
 	return nil
 end
@@ -1887,23 +1819,12 @@ local function KeptTrait(List)
 end
 
 local function SpendTraitReroll(Source, Uuid)
-	-- each roll is a deliberate separate purchase, so give it its own token
-	local Seq = NextEndpointSequence()
 	if Source == "remnant" then
-		return CallEndpointOnce("use_item", 10, function()
-			local Remote = GetEndpoint("use_item")
-			return Remote:InvokeServer("star_remnant", { unit_uuid = Uuid })
-		end, Seq, "star_remnant", "unit_uuid=" .. tostring(Uuid))
+		return FireEndpoint("use_item", "star_remnant", { unit_uuid = Uuid })
 	elseif Source == "remnant_ltd" then
-		return CallEndpointOnce("use_item", 10, function()
-			local Remote = GetEndpoint("use_item")
-			return Remote:InvokeServer("star_remnant_limited", { unit_uuid = Uuid })
-		end, Seq, "star_remnant_limited", "unit_uuid=" .. tostring(Uuid))
+		return FireEndpoint("use_item", "star_remnant_limited", { unit_uuid = Uuid })
 	end
-	return CallEndpointOnce("request_token_trait_reroll", 10, function()
-		local Remote = GetEndpoint("request_token_trait_reroll")
-		return Remote:InvokeServer(Uuid)
-	end, Seq, Uuid)
+	return FireEndpoint("request_token_trait_reroll", Uuid)
 end
 
 local function AutoRollTraits(UnitId)
@@ -2431,9 +2352,9 @@ local function UseCompass(Force)
 		Log("compass remote not found")
 		return false
 	end
-	local Ok, Result = CallEndpointOnce("set_celestial_compass_pick", 5, function()
+	local Ok, Result = CallWithTimeout(5, function()
 		return Remote:InvokeServer(Config.CompassId, Config.CompassUnit)
-	end, nil, Config.CompassId, Config.CompassUnit)
+	end)
 	if not Ok then
 		Log("compass failed: %s", tostring(Result))
 		return false
@@ -3486,9 +3407,7 @@ local function JoinChallenge(Def, Uuid)
 
 	for Attempt = 1, Config.MatchmakingRetries do
 		Log("requesting %s (%d/%d)", Def.Label, Attempt, Config.MatchmakingRetries)
-		-- each retry is a deliberate new request, so give it a unique token
-		CallEndpointOnce("request_matchmaking", 10, InvokeServer,
-			NextEndpointSequence(), "request_matchmaking", Def.LevelId)
+		CallWithTimeout(10, InvokeServer, "request_matchmaking", Def.LevelId)
 		local Deadline = os.clock() + 4
 		repeat
 			if MatchmakingMap() == Def.MapLabel then
@@ -3769,7 +3688,6 @@ local function ApplyLobbySettings()
 end
 
 RunLobby = function()
-	ResetEndpointLedger()
 	Log("lobby mode")
 	if Config.StatsOverlay then
 		StartLobbyWidget()
@@ -5789,7 +5707,6 @@ end
 -- KeepScan: the map was already scanned before the match (visual preview), so
 -- keep the nodes, lanes, path data and visuals and only reset match state.
 local function ResetForNewMatch(Reason, KeepScan)
-	ResetEndpointLedger()
 	local Keep = KeepScan == true and #Placer.Nodes > 0 and not Placer.NeedScan
 	if not Keep then
 		Placer.Nodes = {}
@@ -6515,8 +6432,9 @@ local function RunQueue()
 				else
 					Tries += 1
 					local Before = Placer.Money()
-					local Ok, Result = CallEndpointOnce("upgrade_unit_ingame", 10, InvokeServer,
-						NextEndpointSequence(), "upgrade_unit_ingame", Model)
+					local Ok, Result = pcall(function()
+						return InvokeServer("upgrade_unit_ingame", Model)
+					end)
 					if not Ok or Result == false then
 						Requeue(Item)
 						if os.clock() - Placer.LastUpgradeWarn > 10 then
@@ -6773,6 +6691,8 @@ local function StartAutoPlace()
 end
 
 local VoteClock = { Start = 0, Skip = 0 }
+local VoteStartSent = false   -- one "vote_start" per vote phase
+local VoteSkipWave = nil      -- one "vote_wave_skip" per wave
 
 local function AutoVotes()
 	local Now = os.clock()
@@ -6781,18 +6701,25 @@ local function AutoVotes()
 	local VoteFolder = Data and Data:FindFirstChild("VoteStart")
 	local Finished = VoteFolder and VoteFolder:FindFirstChild("VotingFinished")
 	local Voting = Finished and Finished:IsA("ValueBase") and Finished.Value == false
-	if StartGui and StartGui:IsA("ScreenGui") and StartGui.Enabled and Voting
-		and Now - VoteClock.Start > Config.VoteRetry then
+	local StartOpen = StartGui and StartGui:IsA("ScreenGui") and StartGui.Enabled and Voting
+	if not StartOpen then
+		VoteStartSent = false
+	elseif not VoteStartSent and Now - VoteClock.Start > Config.VoteRetry then
+		VoteStartSent = true
 		VoteClock.Start = Now
 		CallWithTimeout(10, InvokeServer, "vote_start")
 	end
 
 	local SkipGui = PlayerGui:FindFirstChild("VoteSkip")
-	if SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled and Now - VoteClock.Skip > Config.VoteRetry then
+	local Wave = GetWave()
+	if SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled
+		and VoteSkipWave ~= Wave and Now - VoteClock.Skip > Config.VoteRetry then
+		VoteSkipWave = Wave
 		VoteClock.Skip = Now
-		-- one skip request per wave, not one every VoteRetry seconds
-		CallEndpointOnce("vote_wave_skip", 10, InvokeServer,
-			GetWave() or NextEndpointSequence(), "vote_wave_skip")
+		CallWithTimeout(10, InvokeServer, "vote_wave_skip")
+	end
+	if not (SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled) then
+		VoteSkipWave = nil
 	end
 
 	local Settings = Player:FindFirstChild("_settings")
@@ -6860,12 +6787,11 @@ local function FinishMatch(Ctx)
 			task.wait(0.5)
 		end
 	end
-	-- one request only; the ledger blocks any identical repeat while we wait
+	-- one teleport request, then only observe the transition
+	pcall(FireEndpoint, "teleport_back_to_lobby")
 	while true and not Transitioned() do
-		pcall(FireEndpoint, "teleport_back_to_lobby")
 		task.wait(0.5)
 	end
-	ResetEndpointLedger()
 end
 
 local function CurrentContext()
@@ -6905,7 +6831,6 @@ local function ApplyMatchSettings()
 end
 
 RunInGame = function()
-	ResetEndpointLedger()
 	Log("match mode (%s)", CurrentContext().Kind)
 	ClearScanVisuals()
 	ApplyMatchSettings()
@@ -6929,6 +6854,7 @@ RunInGame = function()
 
 	local WasActive = false
 	local LoseVoted = false
+	local HuntLeaveSent = false -- one teleport request per hunt trigger
 	local Handled = false
 	local LastHuntCheck = 0
 	local LastResetCheck = 0
@@ -6945,6 +6871,7 @@ RunInGame = function()
 			if not WasActive then
 				WasActive = true
 				LoseVoted = false
+				HuntLeaveSent = false
 				Handled = false
 			end
 
@@ -6960,8 +6887,13 @@ RunInGame = function()
 			if (Ctx.Kind == "Story1" or Ctx.Kind == "Infinite") and os.clock() - LastHuntCheck > 5 then
 				LastHuntCheck = os.clock()
 				if NeedHunt() then
-					Log("hunt due -> back to lobby")
-					pcall(FireEndpoint, "teleport_back_to_lobby")
+					if not HuntLeaveSent then
+						HuntLeaveSent = true
+						Log("hunt due -> back to lobby")
+						pcall(FireEndpoint, "teleport_back_to_lobby")
+					end
+				else
+					HuntLeaveSent = false
 				end
 			end
 

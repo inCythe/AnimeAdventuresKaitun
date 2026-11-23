@@ -103,12 +103,11 @@ summon, or the hunt), the script rolls its traits automatically:
 
 ## Endpoint requests
 
-Every client-to-server request is sent **once per action**. Repeated calls from
-polling loops (teleport-to-lobby, votes, claims) reuse the cached result instead
-of firing the remote again. Deliberate repeats — each trait roll, spawn/upgrade,
-and each matchmaking retry — carry a unique sequence token so they are still
-sent. Rejected requests are not cached and may be retried; the ledger resets on
-lobby/match transitions.
+Polling loops never re-fire the same remote: `vote_start` is sent once per vote
+phase, `vote_wave_skip` once per wave, and `teleport_back_to_lobby` once per
+trigger (then the script just waits for the transition). Deliberate actions —
+each trait roll, spawn/upgrade, and spaced matchmaking retries — are still sent
+normally.
 
 ## Files
 
