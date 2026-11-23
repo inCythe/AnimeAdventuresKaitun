@@ -101,6 +101,15 @@ summon, or the hunt), the script rolls its traits automatically:
 - the outcome is saved per unit in the state file, so each unit is only rolled
   once. Set `AutoTrait = false` to disable entirely.
 
+## Endpoint requests
+
+Every client-to-server request is sent **once per action**. Repeated calls from
+polling loops (teleport-to-lobby, votes, claims) reuse the cached result instead
+of firing the remote again. Deliberate repeats — each trait roll, spawn/upgrade,
+and each matchmaking retry — carry a unique sequence token so they are still
+sent. Rejected requests are not cached and may be retried; the ledger resets on
+lobby/match transitions.
+
 ## Files
 
 - `loader.lua` — entry point; fetch and run this
