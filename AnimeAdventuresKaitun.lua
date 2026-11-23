@@ -120,6 +120,7 @@ local InvokeServer = EndpointsClient.invoke_server
 local LevelServiceCore = SafeLoad("load_core_service", "LevelServiceCore")
 
 local Units = SafeLoad("load_data", "Units") or {}
+local Attacks = SafeLoad("load_data", "Attacks") or {}
 local Banners = SafeLoad("load_data", "Banners") or {}
 local Levels = SafeLoad("load_data", "Levels") or {}
 local Worlds = SafeLoad("load_data", "Worlds") or {}
@@ -239,7 +240,10 @@ local Config = {
 
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
-	AutoSell = true,             -- sell everything that is not on the team
+	AutoSell = true,             -- sell everything that is not on the team (never units above level 1)
+	EquipGap = 1.5,              -- seconds between equip requests (the game rate-limits)
+	EquipRetries = 3,            -- per unit, until the slot is verified
+	EquipVerifyTimeout = 8,      -- seconds to wait for a slot to show the new unit
 	SkipCutscenes = true,        -- stub summon/reward/hatch cinematics
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
@@ -302,6 +306,9 @@ if type(UserConfig) == "table" then
 	end
 	if UserConfig.AutoSell ~= nil then
 		Config.AutoSell = UserConfig.AutoSell and true or false
+	end
+	if tonumber(UserConfig.EquipGap) then
+		Config.EquipGap = math.max(0.5, tonumber(UserConfig.EquipGap))
 	end
 	if UserConfig.SkipCutscenes ~= nil then
 		Config.SkipCutscenes = UserConfig.SkipCutscenes and true or false
@@ -548,6 +555,21 @@ local function ScoreUnit(Unit)
 		+ Traits * 100
 end
 
+-- Profile copies expose their level under different names across builds.
+-- Anything above level 1 is protected from AutoSell.
+local function UnitLevel(Unit)
+	if type(Unit) ~= "table" then
+		return 0
+	end
+	for _, Key in ipairs({ "level", "upgrade", "unit_level", "_level", "_upgrade", "upgrade_level" }) do
+		local Value = tonumber(Unit[Key])
+		if Value then
+			return Value
+		end
+	end
+	return 0
+end
+
 -- best owned copy per unit id: UnitId -> { Uuid, Score }
 local function BestCopies()
 	local Best = {}
@@ -580,7 +602,7 @@ end
 -- and the compass unit has actually been obtained
 local function ChallengesEnabled()
 	return Config.Challenges == true
-		or (Config.ChallengesOnlyAfterCompass == true and HasUnit(Config.CompassUnit))
+		or (Config.ChallengesOnlyAfterCompass == true and State.CompassDone == true)
 end
 
 -- user-supplied unit ids (Kaitun.Team / Kaitun.CompassUnit) are matched
@@ -2262,45 +2284,9 @@ end
 -- celestial compass ------------------------------------------------------
 local CompassTried = false
 
--- server-side check: the profile/session may record compass usage even when
--- the local state file was deleted or the pick unit was never obtained
-local function CompassUsedOnServer()
-	local function Scan(Table)
-		if type(Table) ~= "table" then
-			return false
-		end
-		for Key, Value in pairs(Table) do
-			-- only usage markers (compass_used / compass_pick / ...), never the
-			-- item entry itself which would false-positive before it is used
-			if type(Key) == "string"
-				and Key:lower():find("compass", 1, true)
-				and (Key:lower():find("used", 1, true)
-					or Key:lower():find("pick", 1, true)
-					or Key:lower():find("claim", 1, true)
-					or Key:lower():find("done", 1, true))
-			then
-				if Value == true then
-					return true
-				end
-				if type(Value) == "string" and #Value > 0 then
-					return true
-				end
-				if type(Value) == "table" and next(Value) ~= nil then
-					return true
-				end
-			end
-		end
-		return false
-	end
-	if Scan(Profile()) then
-		return true
-	end
-	return Scan(EndpointsClient.session)
-end
-
--- The compass pick is confirmed by the actual summon GUI slot, not by the
--- profile callback: SummonGUI.BannerFrames.EventClover.CelestialCompass.Slot
--- containing celestial_compass_u21 means the compass has been used.
+-- Compass usage is checked ONLY through the summon GUI slot. Profile markers
+-- and the celestial_compass_pick_changed callback are deliberately ignored —
+-- the visible slot is the single source of truth (see CompassUsedInGui).
 local function CompassSlot()
 	local Gui = PlayerGui:FindFirstChild("SummonGUI")
 	local Frames = Gui and Gui:FindFirstChild("BannerFrames")
@@ -2337,11 +2323,7 @@ local function UseCompass(Force)
 		end
 		return true
 	end
-	if HasUnit(Config.CompassUnit) then
-		State.CompassDone = true
-		SaveState()
-		return true
-	end
+	-- GUI-only: owning the unit or a profile/callback marker is NOT enough.
 	if CompassTried and not Force then
 		return false
 	end
@@ -2885,23 +2867,129 @@ local function Slots()
 	return tonumber(GameplaySettings.NUM_TEAM_SLOTS) or 6
 end
 
--- ordered list of uuids, index = slot
+-- Collection data is replicated separately from the session. Wait until the
+-- owned/equipped maps are actually populated before building or equipping a
+-- team, otherwise we equip an empty roster and never retry.
+local function WaitForCollection(Timeout)
+	local Deadline = os.clock() + (Timeout or 30)
+	while os.clock() < Deadline do
+		local C = Collection()
+		if type(C.owned_units) == "table" and next(C.owned_units) ~= nil
+			and type(C.equipped_units) == "table" then
+			return true
+		end
+		task.wait(0.25)
+	end
+	warn("[AA Kaitun] collection data did not load in time")
+	return false
+end
+
+local function LobbyIsFarmUnit(UnitId)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" then
+		return false
+	end
+	if Def.farm_amount ~= nil or Def._show_as_farm_unit == true then
+		return true
+	end
+	if type(Def.end_of_wave) == "table" then
+		for _, Entry in pairs(Def.end_of_wave) do
+			if type(Entry) == "table" and Entry.type == "farm" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- Same effective-DPS formula as the match scorer: own attack + summons,
+-- weighted by range. Lobby has no live models, so max-level data stats are
+-- used. This is the ranking source for the auto-equip refactor.
+local function UnitDps(UnitId)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" then
+		return 0
+	end
+	local Stats = {}
+	for Key, Value in pairs(Def) do
+		Stats[Key] = Value
+	end
+	if type(Def.upgrade) == "table" then
+		for Index = 1, #Def.upgrade do
+			local Entry = Def.upgrade[Index]
+			if type(Entry) == "table" then
+				for Key, Value in pairs(Entry) do
+					Stats[Key] = Value
+				end
+			end
+		end
+	end
+	local Damage = tonumber(Stats.damage) or 0
+	local Cd = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown) or 0
+	local Total = Cd > 0 and Damage / Cd or Damage
+	if Stats.spawn_unit == true or Stats.spawn_script == true then
+		local function AddSummons(AttackId, Weight)
+			local Attack = Attacks[AttackId]
+			if type(Attack) ~= "table" or type(Attack.spawn_unit) ~= "table" then
+				return
+			end
+			for _, Group in pairs(Attack.spawn_unit) do
+				if type(Group) == "table" then
+					for _, Field in ipairs({ "units", "units_nonrandom" }) do
+						local List = Group[Field]
+						if type(List) == "table" then
+							for _, Entry in pairs(List) do
+								if type(Entry) == "table" then
+									local Minion = Units[Entry.unit]
+									local MinionCd = type(Minion) == "table"
+										and (tonumber(Minion.attack_cooldown) or tonumber(Minion.cooldown)) or nil
+									if MinionCd and MinionCd > 0 then
+										local Amount = tonumber(Entry.amount) or tonumber(Group.amount) or 1
+										local Ratio = tonumber(Entry.damage_ratio) or 1
+										Total += Weight * Amount * Ratio * Damage / MinionCd
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		local Primary = Stats.primary_attack or Stats.primary_attack_no_upgrades
+		if type(Primary) == "string" then
+			AddSummons(Primary, 1)
+		end
+		if type(Stats.active_attack) == "string" then
+			local Active = type(Stats.active_attack_stats) == "table" and Stats.active_attack_stats or {}
+			local ActiveCd = tonumber(Active.attack_cooldown)
+			AddSummons(Stats.active_attack, ActiveCd and ActiveCd > 0 and math.min(1, Cd / ActiveCd) or 1)
+		end
+	end
+	return Total * math.max(tonumber(Stats.range) or 8, 1)
+end
+
+-- ordered list of uuids, index = slot. DPS units first, farms last.
 local function BuildTeam()
 	local Best = BestCopies()
-	local Team, Used = {}, {}
+	local DpsTeam, FarmTeam, Used = {}, {}, {}
 	local Limit = Slots()
 
 	local function Add(UnitId)
 		local Copy = Best[UnitId]
-		if Copy and not Used[UnitId] and #Team < Limit then
+		if Copy and not Used[UnitId] and (#DpsTeam + #FarmTeam) < Limit then
 			Used[UnitId] = true
-			Team[#Team + 1] = Copy.Uuid
+			if LobbyIsFarmUnit(UnitId) then
+				FarmTeam[#FarmTeam + 1] = Copy.Uuid
+			else
+				DpsTeam[#DpsTeam + 1] = Copy.Uuid
+			end
 			return true
 		end
 		return false
 	end
 
-	-- Kaitun.Team: equip these units in order, skipping ones you don't own
+	-- Kaitun.Team: equip these units in order, skipping ones you don't own.
+	-- Farms are still pushed to the back slots even if listed here.
 	local TeamIds = {}
 	for _, Id in ipairs(Config.TeamUnits or {}) do
 		local Norm = NormalizeUnitId(Id)
@@ -2909,18 +2997,15 @@ local function BuildTeam()
 			TeamIds[#TeamIds + 1] = Norm
 		end
 	end
-
-	if #TeamIds > 0 then
-		for _, Id in ipairs(TeamIds) do
-			Add(Id)
-		end
+	for _, Id in ipairs(TeamIds) do
+		Add(Id)
 	end
 
-	-- fill the remaining slots with the strongest units
+	-- fill remaining slots by effective DPS (new checker)
 	local Ranked = {}
 	for UnitId, Copy in pairs(Best) do
 		if not Used[UnitId] then
-			Ranked[#Ranked + 1] = { Id = UnitId, Score = Copy.Score }
+			Ranked[#Ranked + 1] = { Id = UnitId, Score = UnitDps(UnitId) }
 		end
 	end
 	table.sort(Ranked, function(A, B)
@@ -2931,6 +3016,14 @@ local function BuildTeam()
 	end)
 	for _, Entry in ipairs(Ranked) do
 		Add(Entry.Id)
+	end
+
+	local Team = {}
+	for _, Uuid in ipairs(DpsTeam) do
+		Team[#Team + 1] = Uuid
+	end
+	for _, Uuid in ipairs(FarmTeam) do
+		Team[#Team + 1] = Uuid
 	end
 	return Team
 end
@@ -2996,7 +3089,8 @@ AutoSell = function()
 	-- group sellable copies by unit id
 	local Copies = {}
 	for Key, Unit in pairs(Owned) do
-		if type(Unit) == "table" and Unit._locked ~= true then
+		-- never sell a unit that has been levelled past 1
+		if type(Unit) == "table" and Unit._locked ~= true and UnitLevel(Unit) <= 1 then
 			local Uuid = type(Unit.uuid) == "string" and Unit.uuid or tostring(Key)
 			local IsEquipped = Equipped[Uuid] or Equipped[tostring(Key)]
 			if not IsEquipped then
@@ -3046,45 +3140,86 @@ AutoSell = function()
 end
 
 local function EquipTeam()
+	-- Do not build/equip until the collection has actually replicated.
+	if not WaitForCollection() then
+		return
+	end
 	local Team = BuildTeam()
 	if #Team == 0 then
 		return
 	end
-	local Want = {}
-	for _, Uuid in ipairs(Team) do
-		Want[Uuid] = true
+
+	local Gap = math.max(0.5, tonumber(Config.EquipGap) or 1.5)
+	local Retries = math.max(1, tonumber(Config.EquipRetries) or 3)
+	local Verify = math.max(2, tonumber(Config.EquipVerifyTimeout) or 8)
+
+	-- One-shot unequip_all instead of one remote call per unit.
+	local UnequipAll = ReplicatedStorage:FindFirstChild("endpoints")
+	UnequipAll = UnequipAll and UnequipAll:FindFirstChild("client_to_server")
+	UnequipAll = UnequipAll and UnequipAll:FindFirstChild("unequip_all")
+	if UnequipAll and UnequipAll:IsA("RemoteFunction") then
+		pcall(function()
+			UnequipAll:InvokeServer()
+		end)
+	else
+		-- fallback only if the game does not expose unequip_all
+		for _, Uuid in pairs(Collection().equipped_units or {}) do
+			task.wait(Gap)
+			CallWithTimeout(10, InvokeServer, "unequip_unit", tostring(Uuid))
+		end
 	end
 
-	for Pass = 1, 3 do
-		-- drop everything that should not be equipped
-		for _, Uuid in pairs(Collection().equipped_units or {}) do
-			if not Want[tostring(Uuid)] then
-				CallWithTimeout(10, InvokeServer, "unequip_unit", tostring(Uuid))
-				task.wait(0.5)
-			end
-		end
-		local AllGood = true
-		for Slot, Uuid in ipairs(Team) do
-			if SlotUuid(Slot) ~= Uuid then
-				AllGood = false
-				local Occupant = SlotUuid(Slot)
-				if Occupant then
-					CallWithTimeout(10, InvokeServer, "unequip_unit", Occupant)
-					task.wait(0.5)
-				end
-				if Pass == 3 then
-					CallWithTimeout(10, InvokeServer, "equip_unit", Uuid)
-				else
-					CallWithTimeout(10, InvokeServer, "equip_unit", Uuid, Slot)
-				end
-				task.wait(0.5)
-			end
-		end
-		if AllGood then
+	-- VERIFY the unequip landed before sending any equip request.
+	local ClearDeadline = os.clock() + math.max(Verify, 8)
+	while os.clock() < ClearDeadline do
+		if CountEntries(Collection().equipped_units or {}) == 0 then
 			break
 		end
+		task.wait(0.3)
 	end
-	Log("team equipped (%d units)", #Team)
+
+	-- Equip in order: DPS units first, farm units in the last slots.
+	-- Each slot is VERIFIED before the next request is sent — the game
+	-- rate-limits rapid requests ("Sending requests too fast").
+	for Slot, Uuid in ipairs(Team) do
+		local Equipped = false
+		for Attempt = 1, Retries do
+			if SlotUuid(Slot) == Uuid then
+				Equipped = true
+				break
+			end
+			task.wait(Gap) -- throttle BEFORE every request
+			CallWithTimeout(10, InvokeServer, "equip_unit", Uuid, Slot)
+			local Deadline = os.clock() + Verify
+			while os.clock() < Deadline do
+				task.wait(0.25)
+				if SlotUuid(Slot) == Uuid then
+					Equipped = true
+					break
+				end
+			end
+			if Equipped then
+				break
+			end
+			Log("equip slot %d not reflected yet (attempt %d/%d)", Slot, Attempt, Retries)
+		end
+		if not Equipped then
+			Log("equip slot %d failed after %d attempts", Slot, Retries)
+		end
+	end
+
+	-- Final verification: only report mismatches, do not spam more requests.
+	local Missing = {}
+	for Slot, Uuid in ipairs(Team) do
+		if SlotUuid(Slot) ~= Uuid then
+			Missing[#Missing + 1] = tostring(Slot)
+		end
+	end
+	if #Missing == 0 then
+		Log("team verified: %d units equipped (dps first / farms last)", #Team)
+	else
+		Log("team partially equipped: slots %s did not verify", table.concat(Missing, ", "))
+	end
 	if Config.AutoSell then
 		AutoSell()
 	end
@@ -3534,7 +3669,7 @@ local function Plan()
 	-- challenges-only: once the compass unit is actually summoned/owned, never
 	-- join infinite — story still runs until EndgameLevel so low-level
 	-- accounts keep progressing (using the compass item alone does not count)
-	if Config.ChallengesOnlyAfterCompass and HasUnit(Config.CompassUnit) then
+	if Config.ChallengesOnlyAfterCompass and State.CompassDone == true then
 		return false
 	end
 	return JoinInfiniteLoop()
@@ -3689,6 +3824,9 @@ end
 
 RunLobby = function()
 	Log("lobby mode")
+	-- collection (owned_units / equipped_units) replicates after the session;
+	-- wait for it before ANY lobby logic reads it
+	WaitForCollection()
 	if Config.StatsOverlay then
 		StartLobbyWidget()
 	end
@@ -3761,6 +3899,8 @@ local PlaceConfig = {
 	UpgradeStrategy = "value", -- "spread" | "value" | "farm_first"
 	PlaceDpsWeight = 2, -- raw DPS is the primary placement score for combat units
 	PlaceDpsPerCostWeight = 5, -- secondary efficiency bonus
+	PlaceTierWeight = 1000, -- rarity tier outranks DPS: Epic before Rare, etc.
+	UpgradeTierWeight = 1000, -- same rule when choosing which unit to upgrade next
 	UpgradeRawDpsWeight = 4, -- bonus for upgrading high-DPS units when stable
 	PlaceFarmWeight = 60,
 	PlaceBuffWeight = 20,
@@ -3875,6 +4015,8 @@ local Placer = {
 	Core = nil,
 	Paths = nil,
 	Grid = nil,
+	Slots = {}, -- equipped UUID -> spawn_units GUI slot (unique-trait check)
+	Live = {}, -- equipped UUID -> live _stats of its placed model
 }
 
 -- Taken/rejected nodes are excluded from placement, but their marker stays on
@@ -4517,18 +4659,18 @@ local function Rescan()
 	return #All
 end
 
--- unit classification
+-- unit classification — real fields from Loader.load_data(nil, "Units")
 local function IsFarmUnit(UnitId)
 	local Def = Units[UnitId]
 	if type(Def) ~= "table" then
 		return false
 	end
-	if Def.farm_amount ~= nil or Def.farm == true or type(Def.farm) == "number" then
+	if Def.farm_amount ~= nil or Def._show_as_farm_unit == true then
 		return true
 	end
 	if type(Def.end_of_wave) == "table" then
-		for _, Value in pairs(Def.end_of_wave) do
-			if type(Value) == "table" and Value.farm_amount then
+		for _, Entry in pairs(Def.end_of_wave) do
+			if type(Entry) == "table" and Entry.type == "farm" then
 				return true
 			end
 		end
@@ -4546,25 +4688,90 @@ local function IsBuffUnit(UnitId)
 	return BuffCache[UnitId]
 end
 
-local function TerrainForUnit(UnitId)
-	local Def = Units[UnitId]
-	if type(Def) == "table" and Def.hill_unit == true then
-		return "hill"
-	end
-	return "ground"
-end
-
-local function SpawnCap(UnitId)
+-- hill_unit = hill only; hybrid_placement = either terrain
+-- Sub-scope (200-local limit): exported onto Placer below.
+do
+local function CanPlaceOn(UnitId, Kind)
 	local Def = Units[UnitId]
 	if type(Def) ~= "table" then
-		return 5
+		return Kind == "ground"
 	end
-	return tonumber(Def.spawn_cap) or tonumber(Def.max_spawn_units) or 5
+	if Def.hybrid_placement == true then
+		return true
+	end
+	return (Def.hill_unit == true) == (Kind == "hill")
+end
+
+-- Equipped UUID -> spawn_units GUI slot. The slot attribute uses the exact
+-- same UUID string (with braces) as profile_data.collection.equipped_units.
+local function RefreshSpawnSlots()
+	local Slots = {}
+	local Gui = PlayerGui:FindFirstChild("spawn_units")
+	local Lives = Gui and Gui:FindFirstChild("Lives")
+	local Frame = Lives and Lives:FindFirstChild("Frame")
+	local List = Frame and Frame:FindFirstChild("Units")
+	if List then
+		for _, Slot in ipairs(List:GetChildren()) do
+			if Slot:IsA("GuiObject") then
+				local Uuid = Slot:GetAttribute("_equipped_frame_unit_uuid")
+				if type(Uuid) == "string" then
+					Slots[Uuid] = Slot
+				end
+			end
+		end
+	end
+	Placer.Slots = Slots
+end
+
+local function SlotFor(UnitId, Uuid)
+	if Uuid and Placer.Slots[Uuid] then
+		return Placer.Slots[Uuid]
+	end
+	local Def = Units[UnitId]
+	local Name = type(Def) == "table" and Def.name or nil
+	if Name then
+		for _, Slot in pairs(Placer.Slots) do
+			local Label = Slot:FindFirstChild("name")
+			if Label and Label:IsA("TextLabel") and Label.Text == Name then
+				return Slot
+			end
+		end
+	end
+	return nil
+end
+
+Placer.CanPlaceOn = CanPlaceOn
+Placer.RefreshSpawnSlots = RefreshSpawnSlots
+Placer.SlotFor = SlotFor
+end -- end placement helper sub-scope
+
+-- Cap comes from Units[UnitId].spawn_cap. The ONLY override is the `unique`
+-- trait icon at PlayerGui.spawn_units.Lives.Frame.Units["N"].Main.TraitIcons.unique
+-- which forces 1 placement (e.g. eren: data says 2, unique makes it 1).
+-- max_spawn_units is a minion count and is never used here.
+local function SpawnCap(UnitId, Uuid)
+	local Slot = Placer.SlotFor(UnitId, Uuid)
+	if Slot then
+		local Main = Slot:FindFirstChild("Main")
+		local Icons = Main and Main:FindFirstChild("TraitIcons")
+		local Unique = Icons and Icons:FindFirstChild("unique")
+		if Unique and Unique:IsA("GuiObject") and Unique.Visible then
+			return 1
+		end
+	end
+	local Def = Units[UnitId]
+	if type(Def) == "table" and type(Def.spawn_cap) == "number" then
+		return Def.spawn_cap
+	end
+	return nil
 end
 
 local function UnitCost(UnitId)
 	local Def = Units[UnitId]
-	return type(Def) == "table" and type(Def.cost) == "number" and Def.cost or 0
+	if type(Def) == "table" and type(Def.cost) == "number" then
+		return Def.cost
+	end
+	return nil
 end
 
 local function StatValue(Model, Name)
@@ -4581,11 +4788,11 @@ local function NextUpgradeCost(UnitId, Level)
 	if type(Def) ~= "table" or type(Def.upgrade) ~= "table" or Level == nil then
 		return nil
 	end
-	local Entry = Def.upgrade[Level + 1] or Def.upgrade[tostring(Level + 1)]
-	if type(Entry) ~= "table" then
+	local Entry = Def.upgrade[Level + 1] -- contiguous numeric array, no string keys
+	if type(Entry) ~= "table" or type(Entry.cost) ~= "number" then
 		return nil
 	end
-	return tonumber(Entry.cost) or 0
+	return Entry.cost
 end
 
 local function GetMoney()
@@ -4830,20 +5037,29 @@ local function RefreshFarmStats()
 	Placer.FarmStats = Stats
 end
 
--- A level-0 unit uses the base def; level N uses def.upgrade[N]. The game's
--- upgrade[level+1] entry is the *next* level's stats.
+-- Level 0 = base def. Level N = base def with upgrade[1..N] applied in order;
+-- entries are partial deltas and later levels do NOT repeat earlier fields.
 local function StatsAt(UnitId, Level)
 	local Def = Units[UnitId]
 	if type(Def) ~= "table" then
 		return nil
 	end
-	if Level <= 0 then
+	if Level <= 0 or type(Def.upgrade) ~= "table" then
 		return Def
 	end
-	if type(Def.upgrade) ~= "table" then
-		return Def
+	local Merged = {}
+	for Key, Value in pairs(Def) do
+		Merged[Key] = Value
 	end
-	return Def.upgrade[Level] or Def.upgrade[tostring(Level)] or Def
+	for Index = 1, Level do
+		local Entry = Def.upgrade[Index]
+		if type(Entry) == "table" then
+			for Key, Value in pairs(Entry) do
+				Merged[Key] = Value
+			end
+		end
+	end
+	return Merged
 end
 
 -- Farm ROI: extra yen per wave, what that upgrade costs, and how many waves
@@ -4951,10 +5167,12 @@ end
 
 local function NodesFor(UnitId)
 	local Farm = IsFarmUnit(UnitId)
-	local Terrain = Farm and PlaceConfig.FarmTerrain or TerrainForUnit(UnitId)
 	local Pool = {}
 	for _, Node in ipairs(Placer.Nodes) do
-		if Node.BaseValid and (Terrain == "any" or Node.Kind == Terrain) then
+		local TerrainOk = Farm
+			and Node.Kind == PlaceConfig.FarmTerrain
+			or not Farm and Placer.CanPlaceOn(UnitId, Node.Kind)
+		if Node.BaseValid and TerrainOk then
 			Pool[#Pool + 1] = Node
 		end
 	end
@@ -5239,12 +5457,72 @@ function Placer.NodeBusy(Node)
 end
 
 -- scoring -----------------------------------------------------------------
+-- Sub-scope: these helpers are exported onto Placer so their locals do not
+-- stay alive in the match scope (Luau allows only 200 active locals per chunk).
+do
+-- Rarity tier from GameplaySettings.RARITY_TIERS (Secret 6 ... Common 0).
+local RarityTiers = type(GameplaySettings.RARITY_TIERS) == "table"
+	and GameplaySettings.RARITY_TIERS or {}
+local function TierOf(UnitId)
+	local Def = Units[UnitId]
+	local Tier = type(Def) == "table" and RarityTiers[Def.rarity] or nil
+	return type(Tier) == "number" and Tier or -1
+end
+
+-- Actual post-scaling stats off placed models. Traits, relics, buffs and
+-- level scaling are already baked into _stats.damage / .attack_cooldown / .range.
+-- Summons share their owner's uuid, so skip models with a parent_unit.
+local function RefreshLiveStats()
+	local Live = {}
+	local function Add(Model)
+		if not (Model and Model:IsA("Model") and Model:IsDescendantOf(workspace)) then
+			return
+		end
+		local Stats = Model:FindFirstChild("_stats")
+		if not Stats then
+			return
+		end
+		local Parent = Stats:FindFirstChild("parent_unit")
+		if Parent and Parent:IsA("ObjectValue") and Parent.Value ~= nil then
+			return
+		end
+		local Uuid = StatValue(Model, "uuid")
+		if type(Uuid) ~= "string" or Live[Uuid] then
+			return
+		end
+		Live[Uuid] = {
+			damage = tonumber(StatValue(Model, "damage")),
+			attack_cooldown = tonumber(StatValue(Model, "attack_cooldown")),
+			range = tonumber(StatValue(Model, "range")),
+			level = tonumber(StatValue(Model, "upgrade")),
+		}
+	end
+	local Folder = workspace:FindFirstChild("_UNITS")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			Add(Model)
+		end
+	end
+	for _, Model in ipairs(CollectionService:GetTagged("player_units")) do
+		Add(Model)
+	end
+	Placer.Live = Live
+end
+
+Placer.TierOf = TierOf
+Placer.RefreshLiveStats = RefreshLiveStats
+end -- end scoring helper sub-scope
+
 local function DpsOf(Def)
 	if type(Def) ~= "table" then
 		return 0
 	end
 	local Damage = tonumber(Def.damage) or 0
-	local Cd = tonumber(Def.attack_cooldown) or tonumber(Def.cooldown) or 0
+	-- attack_cooldown is the real field; a few boss-style defs only have cooldown
+	local Cd = tonumber(Def.attack_cooldown)
+	if Cd == nil then
+		Cd = tonumber(Def.cooldown) or 0
+	end
 	return Cd > 0 and Damage / Cd or Damage
 end
 
@@ -5253,13 +5531,127 @@ local function UpgradeDefAt(UnitId, Level)
 	if type(Def) ~= "table" or type(Def.upgrade) ~= "table" then
 		return nil
 	end
-	return Def.upgrade[Level + 1] or Def.upgrade[tostring(Level + 1)]
+	return Def.upgrade[Level + 1]
 end
+
+-- Another sub-scope for the summon/DPS helpers (same 200-local reason).
+do
+-- Summoned units inherit the SUMMONER's damage scaled by damage_ratio in the
+-- attack data. Their own attack_cooldown sets the cadence. This is why a
+-- damage=0 summoner (eren) still has a real DPS once its summon is unlocked.
+local function SummonDps(Stats, AttackId)
+	local Attack = Attacks[AttackId]
+	if type(Attack) ~= "table" or type(Attack.spawn_unit) ~= "table" then
+		return 0
+	end
+	local Damage = tonumber(Stats.damage) or 0
+	local Total = 0
+	for _, Group in pairs(Attack.spawn_unit) do
+		if type(Group) == "table" then
+			for _, Field in ipairs({ "units", "units_nonrandom" }) do
+				local List = Group[Field]
+				if type(List) == "table" then
+					for _, Entry in pairs(List) do
+						if type(Entry) == "table" then
+							local Minion = Units[Entry.unit]
+							local Cd = type(Minion) == "table"
+								and (tonumber(Minion.attack_cooldown) or tonumber(Minion.cooldown)) or nil
+							if Cd and Cd > 0 then
+								local Amount = tonumber(Entry.amount) or tonumber(Group.amount) or 1
+								local Ratio = tonumber(Entry.damage_ratio) or 1
+								Total += Amount * Ratio * Damage / Cd
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return Total
+end
+
+-- Stats at Level, optionally rooted at the model's LIVE level so an upgrade
+-- delta is applied on top of real stats instead of the static max-level data.
+local function StatsAtLive(UnitId, Level, Uuid, LiveLevel)
+	local Base = StatsAt(UnitId, LiveLevel and (LiveLevel > 0 and LiveLevel or 0) or 0)
+	if type(Base) ~= "table" then
+		return nil
+	end
+	local Copy = {}
+	for Key, Value in pairs(Base) do
+		Copy[Key] = Value
+	end
+	local Live = Uuid and Placer.Live[Uuid]
+	if Live then
+		if Live.damage then
+			Copy.damage = Live.damage
+		end
+		if Live.attack_cooldown and Live.attack_cooldown > 0 then
+			Copy.attack_cooldown = Live.attack_cooldown
+		end
+		if Live.range and Live.range > 0 then
+			Copy.range = Live.range
+		end
+	end
+	if LiveLevel and Level > LiveLevel then
+		for Index = LiveLevel + 1, Level do
+			local Entry = UpgradeDefAt(UnitId, Index - 1)
+			if type(Entry) == "table" then
+				for Key, Value in pairs(Entry) do
+					Copy[Key] = Value
+				end
+			end
+		end
+	end
+	return Copy
+end
+
+-- Own attack + primary summon + active-attack summon, with live stats when
+-- a placed copy exists. Returns DPS and range (range weights damage per pass).
+local function EffectiveDpsAt(UnitId, Level, Uuid, LiveLevel)
+	local Stats = StatsAtLive(UnitId, Level, Uuid, LiveLevel)
+	if type(Stats) ~= "table" then
+		return 0, 0
+	end
+	local Total = DpsOf(Stats)
+	if Stats.spawn_unit == true or Stats.spawn_script == true then
+		local Primary = Stats.primary_attack or Stats.primary_attack_no_upgrades
+		if type(Primary) == "string" then
+			Total += SummonDps(Stats, Primary)
+		end
+		if type(Stats.active_attack) == "string" then
+			local Active = type(Stats.active_attack_stats) == "table" and Stats.active_attack_stats or {}
+			local ActiveCd = tonumber(Active.attack_cooldown)
+			local OwnCd = tonumber(Stats.attack_cooldown) or 0
+			local Bonus = SummonDps(Stats, Stats.active_attack)
+			if ActiveCd and ActiveCd > 0 and OwnCd > 0 then
+				Total += Bonus * math.min(1, OwnCd / ActiveCd)
+			else
+				Total += Bonus
+			end
+		end
+	end
+	local Range = tonumber(Stats.range) or tonumber(PlaceConfig.DefaultRange) or 8
+	return Total, math.max(Range, 1)
+end
+
+-- Max-level DPS for an unplaced/equipped unit (used by placement scoring).
+local function EffectiveDpsOf(UnitId, Uuid)
+	local Def = Units[UnitId]
+	local Level = type(Def) == "table" and type(Def.upgrade) == "table" and #Def.upgrade or 0
+	return EffectiveDpsAt(UnitId, Level, Uuid, nil)
+end
+
+Placer.SummonDps = SummonDps
+Placer.StatsAtLive = StatsAtLive
+Placer.EffectiveDpsAt = EffectiveDpsAt
+Placer.EffectiveDpsOf = EffectiveDpsOf
+end -- end DPS helper sub-scope
 
 -- Which equipped unit to place next. Farm units open the economy, buffs are
 -- worth a slot, combat units rank by damage-per-second per yen. Under-used
 -- unit ids get a boost so the lineup spreads out.
-local function UnitPlaceScore(UnitId)
+local function UnitPlaceScore(UnitId, Uuid)
 	local Def = Units[UnitId]
 	if type(Def) ~= "table" then
 		return 0
@@ -5274,9 +5666,13 @@ local function UnitPlaceScore(UnitId)
 	elseif IsBuffUnit(UnitId) then
 		Score = PlaceConfig.PlaceBuffWeight
 	else
-		local Dps = DpsOf(Def)
-		Score = Dps * PlaceConfig.PlaceDpsWeight + Dps / Cost * PlaceConfig.PlaceDpsPerCostWeight
+		-- effective DPS (own + summons) * range, using live stats when placed
+		local Dps, Range = Placer.EffectiveDpsOf(UnitId, Uuid)
+		Score = Dps * Range * PlaceConfig.PlaceDpsWeight
+			+ Dps / Cost * PlaceConfig.PlaceDpsPerCostWeight
 	end
+	-- rarity decides order first: Epic before Rare, etc.
+	Score = Score + Placer.TierOf(UnitId) * (tonumber(PlaceConfig.PlaceTierWeight) or 1000)
 	local Spread = PlaceConfig.PlaceSpreadPenalty
 	if PlaceConfig.PlaceStrategy == "role_spread" then
 		Spread = Spread * 3
@@ -5316,8 +5712,11 @@ local function UpgradeScore(Model, UnitId, Level, Cost)
 				Score = Score * 0.1
 			end
 		else
-			local CurDps = DpsOf(StatsAt(UnitId, Level))
-			local NextDps = DpsOf(StatsAt(UnitId, Level + 1))
+			-- live stats from this exact copy, with the next upgrade delta
+			-- applied on top (not the static max-level guess)
+			local Uuid = StatValue(Model, "uuid")
+			local CurDps = Placer.EffectiveDpsAt(UnitId, Level, Uuid, Level)
+			local NextDps = Placer.EffectiveDpsAt(UnitId, Level + 1, Uuid, Level)
 			local Gain = NextDps - CurDps
 			Score = Gain / math.max(Cost, 1) * PlaceConfig.CombatUpgradeWeight
 			-- scale by how much lane the unit's real position can still reach:
@@ -5344,6 +5743,8 @@ local function UpgradeScore(Model, UnitId, Level, Cost)
 	if IsBuffUnit(UnitId) then
 		Score = Score - 5
 	end
+	-- higher rarity tier is upgraded first (Epic before Rare, etc.)
+	Score = Score + Placer.TierOf(UnitId) * (tonumber(PlaceConfig.UpgradeTierWeight) or 1000)
 	return Score
 end
 
@@ -5802,6 +6203,9 @@ function Placer.Money()
 end
 
 function Placer.CanSpend(Cost)
+	if Cost == nil then
+		return false
+	end
 	local Money = Placer.Money()
 	return Money ~= nil and Money >= Cost
 end
@@ -5817,8 +6221,11 @@ function Placer.Reserve(Cost, Before)
 end
 
 -- copies of one unit we are willing to place (farms have their own cap)
-function Placer.PlaceCap(UnitId)
-	local Cap = SpawnCap(UnitId)
+function Placer.PlaceCap(UnitId, Uuid)
+	local Cap = SpawnCap(UnitId, Uuid)
+	if Cap == nil then
+		return nil -- unknown: caller skips instead of guessing
+	end
 	if IsFarmUnit(UnitId) then
 		Cap = math.min(Cap, tonumber(PlaceConfig.FarmCopies) or Cap)
 	end
@@ -6169,12 +6576,14 @@ local function ComputePlaceCandidate()
 	local All = {}
 	for _, Uuid in ipairs(EquippedUuids()) do
 		local UnitId = UnitIdForUuid(Uuid)
-		if UnitId and Units[UnitId] and (not IsFarmUnit(UnitId) or FarmsAllowed)
-			and (Counts[UnitId] or 0) < Placer.PlaceCap(UnitId) then
+		local Cap = UnitId and Placer.PlaceCap(UnitId, Uuid) or nil
+		if UnitId and Units[UnitId] and Cap
+			and (not IsFarmUnit(UnitId) or FarmsAllowed)
+			and (Counts[UnitId] or 0) < Cap then
 			local Spot = Placer.Resolve(UnitId)
 			if Spot then
 				local Farm = Spot.Farm
-				local Score = UnitPlaceScore(UnitId) + NodeFitScore(Spot.Node, UnitId, Farm)
+				local Score = UnitPlaceScore(UnitId, Uuid) + NodeFitScore(Spot.Node, UnitId, Farm)
 				local Cost = UnitCost(UnitId)
 				local Entry = {
 					Kind = "place", Id = Uuid, Uuid = Uuid, UnitId = UnitId, Farm = Farm,
@@ -6218,7 +6627,9 @@ local function UpgradeCandidates()
 			if Cost ~= nil then
 				-- money is NOT filtered here: the top entry may be the thing we
 				-- are saving for. Callers check affordability when they spend.
-				local Gain = DpsOf(StatsAt(UnitId, Level + 1)) - DpsOf(StatsAt(UnitId, Level))
+				local Uuid = StatValue(Model, "uuid")
+				local Gain = Placer.EffectiveDpsAt(UnitId, Level + 1, Uuid, Level)
+					- Placer.EffectiveDpsAt(UnitId, Level, Uuid, Level)
 				-- effective gain: scaled by how much lane the unit can really reach
 				local EffGain = Gain
 				if not IsFarmUnit(UnitId) then
@@ -6281,6 +6692,8 @@ local function UpgradeCandidates()
 end
 
 local function ComputeQueue()
+	Placer.RefreshSpawnSlots() -- unique-trait cap check
+	Placer.RefreshLiveStats() -- actual damage/cooldown/range off placed models
 	RefreshFarmStats()
 	Placer.EnemyInfo = AssessEnemies()
 	Placer.Defense = AssessDefense()
@@ -6412,6 +6825,9 @@ local function RunQueue()
 	local MaxDone = math.max(1, tonumber(PlaceConfig.ActionsPerTick) or 1)
 	local MaxTries = MaxDone + math.max(0, tonumber(PlaceConfig.ExtraTries) or 0)
 	local Done, Tries, Held, Short = 0, 0, 0, 0
+	-- If a higher-priority upgrade cannot be bought right now (money or held
+	-- for a target), fall through to the next priority instead of stalling.
+	local UpgradeBlocked = false
 	for _, Item in ipairs(Queue) do
 		if Done >= MaxDone or Tries >= MaxTries then
 			break
@@ -6426,9 +6842,11 @@ local function RunQueue()
 			if Cost ~= nil and (MaxLevel == nil or Level < MaxLevel) then
 				if not Placer.CanSpend(Cost) then
 					Short += 1
-				elseif not (IsFarmUnit(Item.UnitId)
+					UpgradeBlocked = true
+				elseif not (UpgradeBlocked or IsFarmUnit(Item.UnitId)
 					or Placer.AllowSpend("upgrade", Item, Item.UnitId, Cost, Item.EffGain)) then
 					Held += 1 -- farm upgrades pay for themselves and are never held
+					UpgradeBlocked = true
 				else
 					Tries += 1
 					local Before = Placer.Money()
@@ -6469,7 +6887,10 @@ local function RunQueue()
 			-- placement: the spot and the money are resolved NOW
 			local UnitId = Item.UnitId
 			local Cost = UnitCost(UnitId)
-			if (Placer.UnitCounts[UnitId] or 0) >= Placer.PlaceCap(UnitId) then
+			local Cap = Placer.PlaceCap(UnitId, Item.Uuid)
+			if Cost == nil then
+				Short += 1 -- no cost in the data: skip instead of guessing
+			elseif Cap and (Placer.UnitCounts[UnitId] or 0) >= Cap then
 				Short += 0 -- full: an earlier entry this tick used the last slot
 			elseif not Placer.CanSpend(Cost) then
 				Short += 1
@@ -6622,6 +7043,8 @@ local function PlacementTick()
 		end
 		-- scoring failed: still build a plain queue so nothing stops
 		pcall(function()
+			Placer.RefreshSpawnSlots()
+			Placer.RefreshLiveStats()
 			local Place, _, Places = ComputePlaceCandidate()
 			Placer.Queue = { Place = Place, Upgrades = {}, Items = Placer.BuildItems(Places, UpgradeCandidates()) }
 		end)
@@ -6748,16 +7171,18 @@ local function DecideAfterMatch(Ctx)
 	return "Replay"
 end
 
+-- Called ONCE from the GameFinished value-change hook. Every remote is fired
+-- at most once; after that we only wait for the value to flip back / a new
+-- match to start. No polling loop and no repeat firing.
 local function FinishMatch(Ctx)
 	task.wait(3)
 	if IsChallengeKind(Ctx.Kind) and Ctx.Uuid then
 		State.ChallengeDone[Ctx.Mode or Ctx.Kind] = Ctx.Uuid
 		SaveState()
 	end
-	task.wait(1)
 
 	local Decision = DecideAfterMatch(Ctx)
-	Log("match finished -> %s", Decision)
+	Log("match finished -> %s (firing once)", Decision)
 	if Config.WebhookMode == "all" then
 		SendWebhook("Match finished (" .. tostring(Ctx.Kind) .. ")",
 			"Decision: " .. Decision .. ".", 5793266, "match:" .. tostring(Ctx.Token or Ctx.Kind))
@@ -6767,18 +7192,20 @@ local function FinishMatch(Ctx)
 		return not GameFinished() or MatchActive()
 	end
 
+	-- one shot only: replay vote OR the leave-to-lobby remote
 	if Decision == "Replay" then
-		-- the vote is a one-shot toggle: firing it repeatedly makes the server
-		-- flip the vote back and forth. Send it once, then only wait.
 		pcall(FireEndpoint, "set_game_finished_vote", "replay")
-		local Deadline = os.clock() + 10
-		while os.clock() < Deadline and not Transitioned() do
-			task.wait(0.5)
-		end
-	end
-	while true and not Transitioned() do
+	else
 		pcall(FireEndpoint, "teleport_back_to_lobby")
-		task.wait(0.5)
+	end
+
+	-- wait for the server to react; do not fire again
+	local Deadline = os.clock() + 15
+	while os.clock() < Deadline and not Transitioned() do
+		task.wait(0.25)
+	end
+	if not Transitioned() then
+		Log("finish remote sent once; still waiting for the transition")
 	end
 end
 
@@ -6842,10 +7269,48 @@ RunInGame = function()
 
 	local WasActive = false
 	local LoseVoted = false
-	local Handled = false
+	local FinishHandled = false -- one finish per match, driven by the value change
 	local LastHuntCheck = 0
 	local LastResetCheck = 0
 	local ResetLeaveAt = nil
+
+	-- GameFinished is detected by VALUE CHANGE, not by polling. The single
+	-- remote (replay or leave) is fired once by FinishMatch; the value going
+	-- false arms the next match.
+	local function HandleFinish(Ctx)
+		if FinishHandled then
+			return
+		end
+		FinishHandled = true
+		local Ok, Err = pcall(FinishMatch, Ctx or CurrentContext())
+		if not Ok then
+			warn("[AA Kaitun] finish error: " .. tostring(Err))
+		end
+	end
+	task.spawn(function()
+		while true do
+			local Data = workspace:FindFirstChild("_DATA")
+			local Flag = Data and Data:FindFirstChild("GameFinished")
+			if Flag and Flag:IsA("ValueBase") then
+				local Connected = false
+				pcall(function()
+					Flag:GetPropertyChangedSignal("Value"):Connect(function()
+						if Flag.Value == true then
+							HandleFinish(CurrentContext())
+						else
+							FinishHandled = false
+						end
+					end)
+					Connected = true
+				end)
+				if Connected and Flag.Value == true then
+					HandleFinish(CurrentContext())
+				end
+				break
+			end
+			task.wait(0.5)
+		end
+	end)
 
 	-- placement / upgrades / preview run on their own thread (new system)
 	StartAutoPlace()
@@ -6858,7 +7323,9 @@ RunInGame = function()
 			if not WasActive then
 				WasActive = true
 				LoseVoted = false
-				Handled = false
+				if not GameFinished() then
+					FinishHandled = false
+				end
 			end
 
 			local LoseWave = LoseWaveFor(Ctx)
@@ -6893,13 +7360,7 @@ RunInGame = function()
 			end
 		else
 			WasActive = false
-			if GameFinished() and not Handled then
-				Handled = true
-				local Ok, Err = pcall(FinishMatch, Ctx)
-				if not Ok then
-					warn("[AA Kaitun] finish error: " .. tostring(Err))
-				end
-			end
+			-- finish is handled by the GameFinished value-change hook above
 		end
 		task.wait(0.5)
 	end
@@ -6925,13 +7386,8 @@ local function Main()
 	if Config.SkipCutscenes then
 		InstallCinematicSkip()
 	end
-	-- mark the compass done if the server says the pick changed
-	pcall(function()
-		EndpointsClient.connect_endpoint("celestial_compass_pick_changed", function()
-			State.CompassDone = true
-			SaveState()
-		end)
-	end)
+	-- CompassDone is set ONLY by CompassUsedInGui() (the visible summon slot).
+	-- No profile scan and no celestial_compass_pick_changed callback.
 	StartMilestoneWatcher()
 
 	if Loader.IsLobby then
