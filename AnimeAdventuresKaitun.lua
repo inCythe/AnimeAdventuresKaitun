@@ -6691,8 +6691,6 @@ local function StartAutoPlace()
 end
 
 local VoteClock = { Start = 0, Skip = 0 }
-local VoteStartSent = false   -- one "vote_start" per vote phase
-local VoteSkipWave = nil      -- one "vote_wave_skip" per wave
 
 local function AutoVotes()
 	local Now = os.clock()
@@ -6701,25 +6699,16 @@ local function AutoVotes()
 	local VoteFolder = Data and Data:FindFirstChild("VoteStart")
 	local Finished = VoteFolder and VoteFolder:FindFirstChild("VotingFinished")
 	local Voting = Finished and Finished:IsA("ValueBase") and Finished.Value == false
-	local StartOpen = StartGui and StartGui:IsA("ScreenGui") and StartGui.Enabled and Voting
-	if not StartOpen then
-		VoteStartSent = false
-	elseif not VoteStartSent and Now - VoteClock.Start > Config.VoteRetry then
-		VoteStartSent = true
+	if StartGui and StartGui:IsA("ScreenGui") and StartGui.Enabled and Voting
+		and Now - VoteClock.Start > Config.VoteRetry then
 		VoteClock.Start = Now
 		CallWithTimeout(10, InvokeServer, "vote_start")
 	end
 
 	local SkipGui = PlayerGui:FindFirstChild("VoteSkip")
-	local Wave = GetWave()
-	if SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled
-		and VoteSkipWave ~= Wave and Now - VoteClock.Skip > Config.VoteRetry then
-		VoteSkipWave = Wave
+	if SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled and Now - VoteClock.Skip > Config.VoteRetry then
 		VoteClock.Skip = Now
 		CallWithTimeout(10, InvokeServer, "vote_wave_skip")
-	end
-	if not (SkipGui and SkipGui:IsA("ScreenGui") and SkipGui.Enabled) then
-		VoteSkipWave = nil
 	end
 
 	local Settings = Player:FindFirstChild("_settings")
@@ -6787,9 +6776,8 @@ local function FinishMatch(Ctx)
 			task.wait(0.5)
 		end
 	end
-	-- one teleport request, then only observe the transition
-	pcall(FireEndpoint, "teleport_back_to_lobby")
 	while true and not Transitioned() do
+		pcall(FireEndpoint, "teleport_back_to_lobby")
 		task.wait(0.5)
 	end
 end
@@ -6854,7 +6842,6 @@ RunInGame = function()
 
 	local WasActive = false
 	local LoseVoted = false
-	local HuntLeaveSent = false -- one teleport request per hunt trigger
 	local Handled = false
 	local LastHuntCheck = 0
 	local LastResetCheck = 0
@@ -6871,7 +6858,6 @@ RunInGame = function()
 			if not WasActive then
 				WasActive = true
 				LoseVoted = false
-				HuntLeaveSent = false
 				Handled = false
 			end
 
@@ -6887,13 +6873,8 @@ RunInGame = function()
 			if (Ctx.Kind == "Story1" or Ctx.Kind == "Infinite") and os.clock() - LastHuntCheck > 5 then
 				LastHuntCheck = os.clock()
 				if NeedHunt() then
-					if not HuntLeaveSent then
-						HuntLeaveSent = true
-						Log("hunt due -> back to lobby")
-						pcall(FireEndpoint, "teleport_back_to_lobby")
-					end
-				else
-					HuntLeaveSent = false
+					Log("hunt due -> back to lobby")
+					pcall(FireEndpoint, "teleport_back_to_lobby")
 				end
 			end
 
