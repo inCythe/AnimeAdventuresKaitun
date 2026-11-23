@@ -1,10 +1,11 @@
 -- Anime Adventures — Kaitun loader
--- Paste this into your executor (autoexec folder recommended). It downloads
--- the latest Kaitun script from GitHub. It also re-queues itself via queue_on_teleport so the script
--- survives lobby -> match -> lobby teleports even without autoexec.
+-- Paste this into your executor (autoexec folder recommended).
+-- Downloads the ONE hosted script (Kaitun/AnimeAdventuresKaitun.lua) from
+-- GitHub and re-queues itself via queue_on_teleport so it survives
+-- lobby -> match -> lobby teleports even without autoexec.
 
 local LOADER_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"
-local SCRIPT_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
+local SCRIPT_URL = "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/Kaitun/AnimeAdventuresKaitun.lua"
 
 if not game:IsLoaded() then
 	repeat
