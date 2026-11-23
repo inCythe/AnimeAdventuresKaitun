@@ -258,6 +258,8 @@ local Config = {
 --       WebhookType = "Goal Only", WebhookPing = "",
 --       AutoSell = true, SkipCutscenes = true,
 --       ChallengesOnlyAfterCompass = true,
+--       AutoTrait = true, TraitKeep = { "unique", "reaper" },
+--       TraitSources = { "token", "remnant", "remnant_ltd" },
 --   }
 local UserConfig = Env.Kaitun
 if type(UserConfig) == "table" then
@@ -315,6 +317,18 @@ if type(UserConfig) == "table" then
 	end
 	if type(UserConfig.TraitKeep) == "table" then
 		Config.TraitKeep = UserConfig.TraitKeep
+	end
+	if type(UserConfig.TraitSources) == "table" then
+		Config.TraitSources = UserConfig.TraitSources
+	end
+	if tonumber(UserConfig.TraitMinResources) then
+		Config.TraitMinResources = math.floor(tonumber(UserConfig.TraitMinResources))
+	end
+	if tonumber(UserConfig.TraitRollDelay) then
+		Config.TraitRollDelay = tonumber(UserConfig.TraitRollDelay)
+	end
+	if tonumber(UserConfig.TraitChangeTimeout) then
+		Config.TraitChangeTimeout = tonumber(UserConfig.TraitChangeTimeout)
 	end
 	if UserConfig.StatsOverlay ~= nil then
 		Config.StatsOverlay = UserConfig.StatsOverlay and true or false

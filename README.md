@@ -34,6 +34,14 @@ getgenv().Kaitun = {
 	ChallengesOnlyAfterCompass = false, -- true = once the compass unit is owned,
 	                                 -- stop joining story/infinite; lobby only
 	                                 -- takes challenges/dailies
+	AutoTrait = true,          -- roll traits on the compass unit once owned (default true)
+	TraitKeep = { "unique" },  -- traits to keep; Unique is ALWAYS kept, add more below
+	                           -- e.g. { "reaper", "divine", "Celestial" } (id or display name)
+	TraitSources = { "token", "remnant", "remnant_ltd" }, -- spending order;
+	                           -- skips any source with no resources left
+	TraitMinResources = 0,     -- stop when every source is at/below this
+	TraitRollDelay = 0.25,     -- seconds between rolls
+	TraitChangeTimeout = 5,    -- seconds to wait for a roll to register
 }
 loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```
@@ -72,6 +80,26 @@ alone does not trigger it:
   including ones that reset on the :00/:30 clock (requires `Challenges = true`)
 - hunt and the one-time lobby claims (codes, dailies, summons, team equip)
   still run normally before the compass unit is obtained
+
+## Auto trait rolling
+
+Once the compass unit is actually owned (from the compass pick, the first
+summon, or the hunt), the script rolls its traits automatically:
+
+- spends **trait reroll tokens** first, then `star_remnant`, then
+  `star_remnant_limited` — each source is skipped when it runs out, so all
+  available resources are used before stopping
+- `Unique` is **always** kept; add more winners with `TraitKeep` (ids or
+  display names, e.g. `{ "reaper", "divine", "Celestial" }`)
+- before **every** roll it re-reads the unit's live traits and stops if a kept
+  trait is already present, so a roll is never wasted
+- stops when a kept trait lands or all resources are gone; there is no roll
+  limit
+- a **webhook** reports the result: "Unique rolled on X" (green) if it landed,
+  otherwise "Trait rolls finished on X" with the final trait list. Requires
+  `Webhook` to be set; `WebhookType = "None"` disables all webhooks.
+- the outcome is saved per unit in the state file, so each unit is only rolled
+  once. Set `AutoTrait = false` to disable entirely.
 
 ## Files
 
