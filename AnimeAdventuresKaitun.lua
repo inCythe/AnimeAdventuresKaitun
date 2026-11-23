@@ -241,9 +241,9 @@ local Config = {
 	-- getgenv().Kaitun overrides (merged below)
 	TeamUnits = nil,             -- Kaitun.Team = { "bulby", ... } — units to equip, in order
 	AutoSell = true,             -- sell everything that is not on the team (never units above level 1)
-	EquipGap = 1.5,              -- seconds between equip requests (the game rate-limits)
-	EquipRetries = 3,            -- per unit, until the slot is verified
-	EquipVerifyTimeout = 8,      -- seconds to wait for a slot to show the new unit
+	EquipGap = 0.5,              -- same as equip_best.lua (the game rate-limits)
+	EquipRetries = 3,            -- equip passes, same as equip_best.lua
+	EquipVerifyTimeout = 8,      -- seconds to wait for the unequip_all to clear
 	SkipCutscenes = true,        -- stub summon/reward/hatch cinematics
 	WebhookMode = "goal",        -- "goal" milestones only | "all" + match events | "none"
 	WebhookPing = "",            -- Kaitun.WebhookPing, sent as webhook message content
@@ -3034,6 +3034,15 @@ local function SlotUuid(Slot)
 	return Value and tostring(Value) or nil
 end
 
+-- equip_best.lua style: set of equipped UUIDs (slot is not checked here)
+local function EquippedSet()
+	local Set = {}
+	for _, Uuid in pairs(Collection().equipped_units or {}) do
+		Set[tostring(Uuid)] = true
+	end
+	return Set
+end
+
 -- auto-sell ---------------------------------------------------------------
 -- keeps locked + equipped units, keeps ONE copy (best score, equipped copy
 -- preferred) of each team/compass/hunt unit, sells everything else.
@@ -3178,48 +3187,49 @@ local function EquipTeam()
 		task.wait(0.3)
 	end
 
-	-- Equip in order: DPS units first, farm units in the last slots.
-	-- Each slot is VERIFIED before the next request is sent — the game
-	-- rate-limits rapid requests ("Sending requests too fast").
+	-- equip_best.lua style: want = uuid -> slot. unequip_all above guarantees
+	-- the slots are empty, so auto-assign (pass 1) fills them in Team order —
+	-- DPS units first, farms in the last slots.
+	local Want = {}
 	for Slot, Uuid in ipairs(Team) do
-		local Equipped = false
-		for Attempt = 1, Retries do
-			if SlotUuid(Slot) == Uuid then
-				Equipped = true
-				break
+		Want[Uuid] = Slot
+	end
+
+	for Pass = 1, Retries do
+		local InSlots = EquippedSet()
+		local Missing = {}
+		for Uuid, Slot in pairs(Want) do
+			if not InSlots[Uuid] then
+				Missing[#Missing + 1] = { Uuid = Uuid, Slot = Slot }
 			end
-			task.wait(Gap) -- throttle BEFORE every request
-			-- generated client code calls equip_unit(uuid) ONLY — no slot arg
-			CallWithTimeout(10, InvokeServer, "equip_unit", Uuid)
-			local Deadline = os.clock() + Verify
-			while os.clock() < Deadline do
-				task.wait(0.25)
-				if SlotUuid(Slot) == Uuid then
-					Equipped = true
-					break
-				end
-			end
-			if Equipped then
-				break
-			end
-			Log("equip slot %d not reflected yet (attempt %d/%d)", Slot, Attempt, Retries)
 		end
-		if not Equipped then
-			Log("equip slot %d failed after %d attempts", Slot, Retries)
+		if #Missing == 0 then
+			break
+		end
+		for _, Entry in ipairs(Missing) do
+			task.wait(Gap)
+			if Pass == 1 then
+				-- generated client call: equip_unit(uuid) only
+				CallWithTimeout(10, InvokeServer, "equip_unit", Entry.Uuid)
+			else
+				-- retries force the intended slot, exactly like equip_best.lua
+				CallWithTimeout(10, InvokeServer, "equip_unit", Entry.Uuid, Entry.Slot)
+			end
 		end
 	end
 
-	-- Final verification: only report mismatches, do not spam more requests.
+	-- verify by UUID set (same as equip_best.lua), no extra request spam
+	local InSlots = EquippedSet()
 	local Missing = {}
-	for Slot, Uuid in ipairs(Team) do
-		if SlotUuid(Slot) ~= Uuid then
-			Missing[#Missing + 1] = tostring(Slot)
+	for Uuid in pairs(Want) do
+		if not InSlots[Uuid] then
+			Missing[#Missing + 1] = tostring(Uuid)
 		end
 	end
 	if #Missing == 0 then
 		Log("team verified: %d units equipped (dps first / farms last)", #Team)
 	else
-		Log("team partially equipped: slots %s did not verify", table.concat(Missing, ", "))
+		Log("team partially equipped: %d unit(s) missing", #Missing)
 	end
 	if Config.AutoSell then
 		AutoSell()
