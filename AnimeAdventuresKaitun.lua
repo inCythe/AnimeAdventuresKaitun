@@ -153,6 +153,14 @@ local Config = {
 	Challenges = true,           -- join daily/normal challenges and leave matches for resets
 	ChallengesOnlyAfterCompass = true, -- true = once the compass unit is owned, stop joining story/infinite and only take challenges/dailies in the lobby
 
+	-- auto trait rolling on the compass unit (kicked off once it is owned)
+	AutoTrait = true,          -- roll traits on the compass unit when resources allow
+	TraitKeep = { "unique" },  -- Unique is always forced; add ids/names, e.g. "reaper", "Celestial"
+	TraitSources = { "token", "remnant", "remnant_ltd" },
+	TraitMinResources = 0,
+	TraitRollDelay = 0.25,
+	TraitChangeTimeout = 5,
+
 	-- group + favorite
 	GroupId = 10611639,
 	GroupName = "Gomu",
@@ -302,6 +310,12 @@ if type(UserConfig) == "table" then
 	if UserConfig.ChallengesOnlyAfterCompass ~= nil then
 		Config.ChallengesOnlyAfterCompass = UserConfig.ChallengesOnlyAfterCompass and true or false
 	end
+	if UserConfig.AutoTrait ~= nil then
+		Config.AutoTrait = UserConfig.AutoTrait and true or false
+	end
+	if type(UserConfig.TraitKeep) == "table" then
+		Config.TraitKeep = UserConfig.TraitKeep
+	end
 	if UserConfig.StatsOverlay ~= nil then
 		Config.StatsOverlay = UserConfig.StatsOverlay and true or false
 	end
@@ -320,6 +334,7 @@ local State = {
 	ChallengeSlot = 0,            -- last half-hour slot the challenges were handled in
 	ChallengeDone = {},
 	Hunted = {},                 -- unit id -> true, hunt targets already acquired
+	TraitRoll = {},              -- unit id -> { doneAt, gotUnique, traits, rolls }
 	RedeemedCodes = {},          -- code -> true, backup ledger in case the profile lags
 	Current = nil,
 }
@@ -336,7 +351,7 @@ local function LoadState()
 			State[Key] = Value
 		end
 	end
-	for _, Key in ipairs({ "Hunted", "RedeemedCodes" }) do
+	for _, Key in ipairs({ "Hunted", "RedeemedCodes", "TraitRoll" }) do
 		if type(State[Key]) ~= "table" then
 			State[Key] = {}
 		end
@@ -1687,6 +1702,230 @@ end
 local RunLobby, NeedHunt, CurrentSlot, NextResetInfo
 do
 
+-- auto trait rolling -----------------------------------------------------
+-- Once the compass unit is owned, spend whatever reroll resources exist
+-- (tokens -> star remnants -> limited remnants) until Unique lands. Every
+-- roll re-reads the unit's live traits first so nothing is spent on a unit
+-- that already carries a wanted trait. A webhook reports Unique or the
+-- final trait list; the outcome is saved so it only runs once per unit.
+
+local function TraitResources()
+	local Prof = Profile()
+	local Items = type(Prof.inventory) == "table"
+		and type(Prof.inventory.normal_items) == "table"
+		and Prof.inventory.normal_items or {}
+	return {
+		token = tonumber(Prof.trait_reroll_tokens) or 0,
+		remnant = tonumber(Items.star_remnant) or 0,
+		remnant_ltd = tonumber(Items.star_remnant_limited) or 0,
+	}
+end
+
+local function NextTraitSource(Res)
+	for _, Source in ipairs(Config.TraitSources or {}) do
+		if (tonumber(Res[Source]) or 0) > Config.TraitMinResources then
+			return Source
+		end
+	end
+	return nil
+end
+
+local TraitCatalog
+local function TraitLookup()
+	if not TraitCatalog then
+		TraitCatalog = {}
+		local Data = SafeLoad("load_data", "Traits")
+		if type(Data) == "table" and type(Data.info) == "table" then
+			for Key, Info in pairs(Data.info) do
+				if type(Info) == "table" then
+					local Id = tostring(Info.id or Key):lower()
+					local Name = tostring(Info.name or Key)
+					TraitCatalog[Id] = Name
+					TraitCatalog[Name:lower()] = Name
+				end
+			end
+		end
+	end
+	return TraitCatalog
+end
+
+-- Live trait list: { { trait = "nimble", tier = "2" }, ... }
+local function UnitTraitList(Uuid)
+	local Unit = (Collection().owned_units or {})[Uuid]
+	local Out = {}
+	if type(Unit) == "table" and type(Unit.traits) == "table" then
+		for _, Entry in ipairs(Unit.traits) do
+			if type(Entry) == "table" then
+				Out[#Out + 1] = {
+					id = tostring(Entry.trait or Entry.id or "?"):lower(),
+					tier = tostring(Entry.tier or ""),
+				}
+			end
+		end
+	end
+	table.sort(Out, function(A, B)
+		if A.id ~= B.id then
+			return A.id < B.id
+		end
+		return A.tier < B.tier
+	end)
+	return Out
+end
+
+local function TraitSignature(List)
+	local Parts = {}
+	for _, Trait in ipairs(List) do
+		Parts[#Parts + 1] = Trait.id .. ":" .. Trait.tier
+	end
+	return table.concat(Parts, ",")
+end
+
+local function TraitLabels(List, Lookup)
+	local Out = {}
+	for _, Trait in ipairs(List) do
+		Out[#Out + 1] = (Lookup[Trait.id] or Trait.id)
+			.. (Trait.tier ~= "" and (" T" .. Trait.tier) or "")
+	end
+	table.sort(Out)
+	return Out
+end
+
+local function KeptTrait(List)
+	local Keep = {}
+	for _, Name in ipairs(Config.TraitKeep or {}) do
+		Keep[tostring(Name):lower()] = true
+	end
+	Keep["unique"] = true -- Unique is always kept
+	for _, Trait in ipairs(List) do
+		if Keep[Trait.id] then
+			return Trait
+		end
+	end
+	return nil
+end
+
+local function SpendTraitReroll(Source, Uuid)
+	if Source == "remnant" then
+		return FireEndpoint("use_item", "star_remnant", { unit_uuid = Uuid })
+	elseif Source == "remnant_ltd" then
+		return FireEndpoint("use_item", "star_remnant_limited", { unit_uuid = Uuid })
+	end
+	return FireEndpoint("request_token_trait_reroll", Uuid)
+end
+
+local function AutoRollTraits(UnitId)
+	if not Config.AutoTrait or type(UnitId) ~= "string" or UnitId == "" then
+		return
+	end
+	local Saved = (State.TraitRoll or {})[UnitId]
+	if Saved and Saved.doneAt then
+		return -- already reported / rolled for this unit
+	end
+
+	local Copy = BestCopies()[UnitId]
+	if not Copy then
+		return
+	end
+	local Uuid, Lookup = Copy.Uuid, TraitLookup()
+
+	local Current = UnitTraitList(Uuid)
+	local Hit = KeptTrait(Current)
+	if Hit then
+		State.TraitRoll = State.TraitRoll or {}
+		State.TraitRoll[UnitId] = {
+			doneAt = os.time(), gotUnique = Hit.id == "unique",
+			traits = TraitLabels(Current, Lookup), rolls = 0,
+		}
+		SaveState()
+		Log("%s already has %s — skipping trait rolls", UnitId, Hit.id)
+		return
+	end
+
+	if not NextTraitSource(TraitResources()) then
+		Log("no trait reroll resources for %s — will retry later", UnitId)
+		return
+	end
+
+	local Rolls, GotUnique, Reason = 0, false, "exhausted"
+	while true do
+		-- verify live state before spending anything
+		Current = UnitTraitList(Uuid)
+		Hit = KeptTrait(Current)
+		if Hit then
+			GotUnique = Hit.id == "unique"
+			Reason = GotUnique and "unique" or "kept"
+			break
+		end
+
+		local Res = TraitResources()
+		local Source = NextTraitSource(Res)
+		if not Source then
+			Reason = "exhausted"
+			break
+		end
+
+		local BeforeSig = TraitSignature(Current)
+		local BeforeLeft = tonumber(Res[Source]) or 0
+		local Ok = SpendTraitReroll(Source, Uuid)
+		if not Ok then
+			Reason = "nochange"
+			Log("trait reroll via %s failed", Source)
+			break
+		end
+
+		local Deadline = os.clock() + Config.TraitChangeTimeout
+		local Changed = false
+		repeat
+			task.wait(0.15)
+			local Fresh = UnitTraitList(Uuid)
+			local NowRes = TraitResources()
+			Changed = (TraitSignature(Fresh) ~= BeforeSig)
+				or ((tonumber(NowRes[Source]) or 0) < BeforeLeft)
+		until Changed or os.clock() >= Deadline
+
+		if not Changed then
+			Reason = "nochange"
+			Log("trait roll %d via %s: no change — stopping", Rolls + 1, Source)
+			break
+		end
+
+		Rolls += 1
+		Current = UnitTraitList(Uuid)
+		Hit = KeptTrait(Current)
+		if Hit then
+			GotUnique = Hit.id == "unique"
+			Reason = GotUnique and "unique" or "kept"
+			break
+		end
+		task.wait(Config.TraitRollDelay)
+	end
+
+	Current = UnitTraitList(Uuid)
+	Hit = KeptTrait(Current)
+	GotUnique = Hit ~= nil and Hit.id == "unique" or false
+	local Labels = TraitLabels(Current, Lookup)
+	local Text = #Labels > 0 and table.concat(Labels, ", ") or "none"
+
+	-- only persist/report when an attempt really concluded
+	if Reason ~= "nochange" then
+		State.TraitRoll = State.TraitRoll or {}
+		State.TraitRoll[UnitId] = {
+			doneAt = os.time(), gotUnique = GotUnique,
+			traits = Labels, rolls = Rolls,
+		}
+		SaveState()
+		local Title = GotUnique
+			and ("Unique rolled on " .. UnitDisplayName(UnitId))
+			or ("Trait rolls finished on " .. UnitDisplayName(UnitId))
+		local Desc = GotUnique
+			and ("Got Unique after " .. Rolls .. " roll(s). Traits: " .. Text .. ".")
+			or ("No kept trait after " .. Rolls .. " roll(s). Final traits: " .. Text .. ".")
+		SendWebhook(Title, Desc, GotUnique and 5763719 or 15105570, nil,
+			GotUnique and "\u{1F3C6}" or "\u{1F3B2}")
+	end
+	Log("traits for %s: %s (%d roll(s), unique=%s)", UnitId, Text, Rolls, tostring(GotUnique))
+end
+
 -- group + favorite -------------------------------------------------------
 local function UiRoots()
 	local Roots = { CoreGui }
@@ -2583,6 +2822,7 @@ local function HuntUnit()
 			end
 			SaveState()
 			Log("got %s after %d x10 rolls", Target, Rolls)
+			AutoRollTraits(Target)
 			if Config.WebhookMode == "all" then
 				local Names = {}
 				for Id, Counts in pairs(Hatched) do
@@ -3445,6 +3685,11 @@ RunLobby = function()
 	ClaimAll()
 	SummonTenOnce()
 	EquipTeam()
+	-- the compass unit may arrive from the compass pick, the first summon or
+	-- the hunt; one check here covers all three (state prevents re-rolling)
+	if HasUnit(Config.CompassUnit) then
+		AutoRollTraits(Config.CompassUnit)
+	end
 
 	while true and Loader.IsLobby do
 		local Ok, Requested = pcall(Plan)
