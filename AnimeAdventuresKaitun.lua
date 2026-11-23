@@ -3189,7 +3189,8 @@ local function EquipTeam()
 				break
 			end
 			task.wait(Gap) -- throttle BEFORE every request
-			CallWithTimeout(10, InvokeServer, "equip_unit", Uuid, Slot)
+			-- generated client code calls equip_unit(uuid) ONLY — no slot arg
+			CallWithTimeout(10, InvokeServer, "equip_unit", Uuid)
 			local Deadline = os.clock() + Verify
 			while os.clock() < Deadline do
 				task.wait(0.25)
