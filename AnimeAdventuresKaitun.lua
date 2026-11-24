@@ -246,7 +246,9 @@ end
 local SCRIPT_FILE = Env.AAKaitunFile or "AnimeAdventuresKaitun.lua"
 local SCRIPT_URL = Env.AAKaitunUrl
 	or "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
--- nothing fancy here - a plain template avoids nested quotes in the queued code
+-- The JSON contains double quotes, so it cannot be pasted straight into a Lua
+-- string literal (that was the "Expected ')' ... got 'RollAtGems'" teleport
+-- error). %q escapes it; the function form of gsub also keeps any '%' literal.
 local OkJson, UserJson = pcall(function()
 	return HttpService:JSONEncode(type(User) == "table" and User or {})
 end)
@@ -254,18 +256,20 @@ if not OkJson then
 	UserJson = "{}"
 end
 local BootCode = [[
-getgenv().AAKaitunFile = "__FILE__"
-getgenv().Kaitun = game:GetService("HttpService"):JSONDecode("__CFG__")
-local fn = loadstring(readfile(getgenv().AAKaitunFile))
+getgenv().AAKaitunFile = __FILE__
+getgenv().Kaitun = game:GetService("HttpService"):JSONDecode(__CFG__)
+local fn
+local ok, src = pcall(readfile, getgenv().AAKaitunFile)
+if ok and type(src) == "string" then fn = loadstring(src) end
 if not fn then
-	local ok, src = pcall(game.HttpGet, game, "__URL__")
-	if ok then fn = loadstring(src) end
+	local ok2, remote = pcall(game.HttpGet, game, __URL__)
+	if ok2 and type(remote) == "string" then fn = loadstring(remote) end
 end
 if fn then task.spawn(fn) else warn("[AA Kaitun] reload failed") end
 ]]
-BootCode = BootCode:gsub("__FILE__", SCRIPT_FILE)
-BootCode = BootCode:gsub("__CFG__", UserJson)
-BootCode = BootCode:gsub("__URL__", SCRIPT_URL)
+BootCode = BootCode:gsub("__FILE__", function() return string.format("%q", SCRIPT_FILE) end)
+BootCode = BootCode:gsub("__CFG__", function() return string.format("%q", UserJson) end)
+BootCode = BootCode:gsub("__URL__", function() return string.format("%q", SCRIPT_URL) end)
 
 pcall(function()
 	if type(queue_on_teleport) == "function" then
@@ -546,6 +550,13 @@ function UI.Set(Message)
 	if UI.StatusLabel and UI.StatusLabel.Parent then
 		UI.StatusLabel.Text = "Working - " .. tostring(Message)
 	end
+end
+function UI.Clear()
+	local Gui = PlayerGui:FindFirstChild("AAKaitunLobby")
+	if Gui then
+		Gui:Destroy()
+	end
+	UI.StatusLabel = nil
 end
 function UI.Lobby()
 	local function ResetLeft()
