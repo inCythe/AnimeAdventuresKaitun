@@ -2,8 +2,8 @@
 -- Game: [UPD 21] Anime Adventures - lobby place 8304191830
 --
 -- The only Kaitun script hosted in this repo; loader.lua downloads it and
--- re-queues it on every teleport. Loadstring the file from your executor
--- workspace (or autoexec). Detects lobby vs match by itself.
+-- re-queues it on every teleport. Always fetched over HTTP - no executor
+-- workspace copy is used. Detects lobby vs match by itself.
 --
 -- LOBBY (each visit, after waiting for the game to finish loading)
 --   1. redeem level-gated codes (verified against profile.redeemed_codes)
@@ -240,11 +240,10 @@ if type(User) == "table" then
 end
 
 -- survive lobby <-> match teleports ------------------------------------------
--- The queued stub reloads the HOSTED script first so a stale executor-workspace
--- copy cannot silently replace the version you just pushed; the local file is
--- only a fallback when HTTP fails. The user config is embedded because getgenv()
--- is wiped on teleport in some executors.
-local SCRIPT_FILE = Env.AAKaitunFile or "AnimeAdventuresKaitun.lua"
+-- The queued stub ALWAYS reloads the hosted script over HTTP - there is no
+-- local executor-workspace copy or fallback, so a stale cached file can never
+-- replace the version you published. The user config is embedded because
+-- getgenv() is wiped on teleport in some executors.
 local SCRIPT_URL = Env.AAKaitunUrl
 	or "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
 -- The JSON contains double quotes, so it cannot be pasted straight into a Lua
@@ -257,18 +256,11 @@ if not OkJson then
 	UserJson = "{}"
 end
 local BootCode = [[
-getgenv().AAKaitunFile = __FILE__
 getgenv().Kaitun = game:GetService("HttpService"):JSONDecode(__CFG__)
-local fn
-local ok, remote = pcall(game.HttpGet, game, __URL__)
-if ok and type(remote) == "string" then fn = loadstring(remote) end
-if not fn then
-	local ok2, src = pcall(readfile, getgenv().AAKaitunFile)
-	if ok2 and type(src) == "string" then fn = loadstring(src) end
-end
-if fn then task.spawn(fn) else warn("[AA Kaitun] reload failed") end
+local ok, src = pcall(game.HttpGet, game, __URL__)
+local fn = ok and type(src) == "string" and loadstring(src) or nil
+if fn then task.spawn(fn) else warn("[AA Kaitun] reload failed - HTTP fetch failed") end
 ]]
-BootCode = BootCode:gsub("__FILE__", function() return string.format("%q", SCRIPT_FILE) end)
 BootCode = BootCode:gsub("__CFG__", function() return string.format("%q", UserJson) end)
 BootCode = BootCode:gsub("__URL__", function() return string.format("%q", SCRIPT_URL) end)
 
