@@ -1,8 +1,8 @@
 # Anime Adventures — Kaitun
 
 One-click automation for **[UPD 21] Anime Adventures** (lobby place `8304191830`).
-A single hosted script: `Kaitun/AnimeAdventuresKaitun.lua`. `loader.lua` checks
-the game, fetches that file and re-queues itself after every teleport. The
+A single hosted script: `AnimeAdventuresKaitun.lua` (repo root). `loader.lua`
+checks the game, fetches that file and re-queues itself after every teleport. The
 script also queues a stub that reloads the local executor-workspace copy, so it
 survives lobby ↔ match switches even without autoexec.
 

@@ -245,7 +245,7 @@ end
 -- getgenv() is wiped on teleport in some executors.
 local SCRIPT_FILE = Env.AAKaitunFile or "AnimeAdventuresKaitun.lua"
 local SCRIPT_URL = Env.AAKaitunUrl
-	or "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/Kaitun/AnimeAdventuresKaitun.lua"
+	or "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
 -- nothing fancy here - a plain template avoids nested quotes in the queued code
 local OkJson, UserJson = pcall(function()
 	return HttpService:JSONEncode(type(User) == "table" and User or {})
