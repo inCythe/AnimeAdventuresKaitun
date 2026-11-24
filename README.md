@@ -1,26 +1,18 @@
 # Anime Adventures — Kaitun
 
 One-click automation for **[UPD 21] Anime Adventures** (lobby place `8304191830`).
-A single hosted script: `AnimeAdventuresKaitun.lua` (repo root). `loader.lua`
-checks the game, fetches that file and re-queues itself after every teleport. The
-script also queues a stub that re-fetches it over HTTP with your config, so it
-survives lobby ↔ match switches even without autoexec. There is no local executor
-copy involved — GitHub is always the source of truth.
 
-```
-AA/
-  AnimeAdventuresKaitun.lua     old buggy version, kept locally as reference only
-  Kaitun/
-    loader.lua                  paste into executor / autoexec
-    AnimeAdventuresKaitun.lua   the only script hosted on GitHub
+Paste into your executor / autoexec:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```
 
----
+The loader pulls the script from GitHub on every run and after every teleport. No local executor copy is used.
 
-## Full config (`getgenv().Kaitun`)
+## Full config (getgenv().Kaitun)
 
-Set this **before** running the loader/script. Every field is optional — values
-below are the defaults from the script itself.
+Set this before running the loader/script. Every field is optional — values below are the defaults from the script itself.
 
 ```lua
 getgenv().Kaitun = {
@@ -83,7 +75,7 @@ getgenv().Kaitun = {
 	MinCombatFirst = 2, FarmQuota = 3, PlaceUntilFull = true,
 	ClaimSeconds = 3, RejectCooldown = 10, BlockedCooldown = 20,
 	RescanAfterFails = 3,
-	UpgradesPerTick = 3, ActionDelay = 0.1,
+	UpgradesPerTick = 3, ActionDelay = 0.5,
 
 	-- votes / matchmaking ----------------------------------------------------
 	VoteStart = true, VoteSkip = true,
@@ -93,65 +85,19 @@ getgenv().Kaitun = {
 loadstring(game:HttpGet("https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/loader.lua"))()
 ```
 
-Runtime helpers:
+Only these keys are actually read from `getgenv().Kaitun`: `TargetLevel`, `CompassUnit`, `Team`, `RollAtGems`, `SaveGems`, `Challenges`, `ChallengesOnlyAfterCompass`, `FpsBoost`, `AutoSell`, `SkipCutscenes`, `Summon`, `LoseWave`, `AutoTrait`, `TraitKeep`, `TraitSources`, `TraitMinResources`. Everything else above is shown for reference — leave it out and the script uses its own default.
+
+## Phases
+
+- **Lobby (each visit):** redeem codes, use the celestial compass, claim daily / missions / quests / level rewards / battlepass, one 10x summon (once per account), equip the configured team (or best owned units), auto sell spare units, roll compass traits.
+- **Planner:** hunt when gems reach `RollAtGems` and the compass unit is missing → daily challenge → normal challenge → story loop below `TargetLevel` → Infinite at/above. With `ChallengesOnlyAfterCompass`, once the compass unit is owned it stops story/Infinite and only takes challenges/dailies.
+- **Match:** vote start, scan the lane once, place combat units then farms, upgrade by priority, auto-skip waves, vote lose at `LoseWave` in loop modes. At the end: replay the loop, or leave to lobby when a challenge is due / target level reached / hunt due.
+- **Traits:** once the compass unit is owned, spend tokens → star remnants → limited remnants until Unique (or another kept trait) lands or resources run out. Runs once per unit.
+- **Auto sell:** sells spare level-1 units; keeps locked, equipped, level > 1, Mythic/Secret, and one copy of each configured Team/Compass unit.
+
+## Runtime helpers
 
 ```lua
 getgenv().AAKaitunStop = true  -- stop cleanly at any time
 getgenv().AAKaitun             -- State / Lobby / Match / Account (debug)
 ```
-
----
-
-## Phase 1 — lobby
-
-The lobby waits for the game before touching anything: profile/session (60s),
-collection data (30s), `_LOBBIES` + a populated `more_lobby_params` (30s), then
-a 5 second settle. Only then:
-
-1. Redeem each level-gated code and verify it appears in `redeemed_codes`.
-2. Use the celestial compass pick if the summon GUI slot is still empty.
-3. Claim daily login, board missions, level rewards, quests, battlepass.
-4. Do the one-time 10x summon (per-account JSON state file).
-5. Equip `Team`, or the highest scoring owned units when `Team` is nil.
-6. Auto sell spare units (after summon too).
-7. Reroll the compass unit's traits if it is owned and Unique is missing.
-8. Plan and join (below), then wait for the teleport.
-
-**Planner order:** hunt → daily challenge → normal challenge → story loop →
-Infinite. Challenges are re-checked every `:00`/`:30` reset slot.
-
-## Phase 2 — match
-
-1. `vote_start` fires **once**, only while the real vote popup is open and
-   `VotingFinished == false` (prevents the DifficultyService nil-Instance error).
-2. The optimizer (`optimizer.lua`, embedded verbatim) runs **only here**. FPS
-   cap is 15 by default. Tweak `_G.Cam`, `_G.Transparent`, `_G.Gui`,
-   `_G.Render3D`, `_G.FPSCap` directly — there is no FPS config in this script.
-3. Scan the enemy path once (nodes around the defended line, blocked spots
-   removed via `_bounds` probe), place combat units first then up to 3 farms.
-4. Upgrade the highest-priority affordable unit, a few per tick.
-5. `vote_wave_skip` while its popup is open; `vote_lose_game` at `LoseWave`
-   for story/Infinite loops.
-6. On `GameFinished`, fire exactly one transition: replay the loop, or leave
-   to the lobby if level reached, hunt is due, a challenge reset passed, or
-   the run was a challenge.
-
-## Logic notes
-
-- **State:** `AAKaitun_<UserId>.json` in the executor workspace holds the
-  one-time summon flag, compass flag, challenge clears, trait results and the
-  black-screen toggle. Delete it to reset progression flags.
-- **Traits:** resources are spent tokens → star remnants → limited remnants.
-  Before every roll the live traits are re-read; a kept trait stops the loop.
-  Unique is always in the keep set. There is no roll cap - it keeps going until
-  a kept trait lands or the reroll resources run out. Result is saved so it
-  runs once per unit.
-- **Auto sell:** keeps locked/equipped units, level > 1 units, Mythic/Secret
-  units, and one copy of each configured Team/Compass unit. Unit level is
-  derived from `owned_units[].xp` with `UnitServiceCore.calculate_level`, not
-  from a `level` field (which the collection data does not contain). Everything
-  else is sent to `sell_units` in batches of 50 and the owned count is verified.
-- **Votes:** deliberately fire-once per popup. No idle spam, no early firing.
-- **Teleports:** `queue_on_teleport` reloads `AnimeAdventuresKaitun.lua` from
-  the executor workspace (HTTP fallback), and embeds your config so it still
-  applies after a fresh Lua VM.
