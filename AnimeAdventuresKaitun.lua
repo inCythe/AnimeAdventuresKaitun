@@ -179,7 +179,7 @@ local Config = {
 	BlockedCooldown = 20,
 	RescanAfterFails = 3,
 	UpgradesPerTick = 3,
-	ActionDelay = 0.1,
+	ActionDelay = 0.5,
 
 	-- votes ------------------------------------------------------------------
 	VoteStart = true,
@@ -240,9 +240,10 @@ if type(User) == "table" then
 end
 
 -- survive lobby <-> match teleports ------------------------------------------
--- The queued stub reloads this file from the executor workspace (which survives
--- teleports), and falls back to HTTP. The user config is embedded because
--- getgenv() is wiped on teleport in some executors.
+-- The queued stub reloads the HOSTED script first so a stale executor-workspace
+-- copy cannot silently replace the version you just pushed; the local file is
+-- only a fallback when HTTP fails. The user config is embedded because getgenv()
+-- is wiped on teleport in some executors.
 local SCRIPT_FILE = Env.AAKaitunFile or "AnimeAdventuresKaitun.lua"
 local SCRIPT_URL = Env.AAKaitunUrl
 	or "https://raw.githubusercontent.com/inCythe/AnimeAdventuresKaitun/main/AnimeAdventuresKaitun.lua"
@@ -259,11 +260,11 @@ local BootCode = [[
 getgenv().AAKaitunFile = __FILE__
 getgenv().Kaitun = game:GetService("HttpService"):JSONDecode(__CFG__)
 local fn
-local ok, src = pcall(readfile, getgenv().AAKaitunFile)
-if ok and type(src) == "string" then fn = loadstring(src) end
+local ok, remote = pcall(game.HttpGet, game, __URL__)
+if ok and type(remote) == "string" then fn = loadstring(remote) end
 if not fn then
-	local ok2, remote = pcall(game.HttpGet, game, __URL__)
-	if ok2 and type(remote) == "string" then fn = loadstring(remote) end
+	local ok2, src = pcall(readfile, getgenv().AAKaitunFile)
+	if ok2 and type(src) == "string" then fn = loadstring(src) end
 end
 if fn then task.spawn(fn) else warn("[AA Kaitun] reload failed") end
 ]]
@@ -2614,7 +2615,10 @@ function Lobby.ChallengeUuid(Def)
 	if not Uuid then
 		return nil
 	end
-	if Data.completed == true or Data.cleared == true or Data.already_completed == true then
+	-- the endpoint has no reliable "cleared" field, so the saved ledger is the
+	-- source of truth: Match.Finish records the uuid once that challenge ends
+	if Data.completed == true or Data.cleared == true or Data.already_completed == true
+		or Data.claimed == true or Data.already_claimed == true then
 		State.Clear[Def.Mode] = Uuid
 		SaveState()
 		return nil
@@ -2623,6 +2627,16 @@ function Lobby.ChallengeUuid(Def)
 		return nil
 	end
 	return Uuid
+end
+
+-- Challenges = true joins them outright. With Challenges = false they are
+-- only joined in challenges-only mode AFTER the compass UNIT is actually
+-- owned — the compass pick alone must not enable them.
+local function ChallengesEnabled()
+	if Config.ChallengesOnlyAfterCompass then
+		return Config.CompassUnit ~= nil and Account.HasUnit(Config.CompassUnit)
+	end
+	return Config.DoChallenges == true
 end
 
 -- challenges reset every :00 and :30, so the slot number doubles as a clock
@@ -2687,7 +2701,7 @@ function Lobby.Plan()
 		return "hunt"
 	end
 
-	if Config.DoChallenges then
+	if ChallengesEnabled() then
 		local Level = Account.Level()
 		if Level >= Config.NormalChallengeLevel then
 			-- remember that this reset was looked at, so the match can tell
@@ -2973,20 +2987,26 @@ local function StatValue(Model, Name)
 	return Value and Value:IsA("ValueBase") and Value.Value or nil
 end
 
--- true when the model is ours; when the owner field is missing, assume ours
+-- Strict ownership. An explicit owner value must match us; without one, only
+-- a UUID present in OUR collection counts. Never plan/upgrade another player's
+-- unit or a stray model that merely happens to be tagged "player_units".
 local function IsOurs(Model)
 	local Stats = Model:FindFirstChild("_stats")
 	local Owner = Stats and Stats:FindFirstChild("player")
-	if not Owner or not Owner:IsA("ValueBase") then
-		return true
+	if Owner and Owner:IsA("ValueBase") then
+		local Value = Owner.Value
+		if typeof(Value) == "Instance" then
+			return Value == Player
+		elseif type(Value) == "number" then
+			return Value == Player.UserId
+		end
+		return tostring(Value) == Player.Name or tostring(Value) == Player.DisplayName
 	end
-	local Value = Owner.Value
-	if typeof(Value) == "Instance" then
-		return Value == Player
-	elseif type(Value) == "number" then
-		return Value == Player.UserId
+	local Uuid = StatValue(Model, "uuid")
+	if Uuid then
+		return type((Account.Collection().owned_units or {})[tostring(Uuid)]) == "table"
 	end
-	return tostring(Value) == Player.Name or tostring(Value) == Player.DisplayName
+	return false
 end
 
 local function IsSummon(Model)
@@ -3043,7 +3063,11 @@ end
 
 function Match.BuildPriority()
 	local List = {}
+	local Owned = Account.Collection().owned_units or {}
 	for _, Entry in ipairs(EquippedSlots()) do
+		if type(Owned[Entry.Uuid]) ~= "table" then
+			continue -- only equipped units we actually own
+		end
 		local UnitId = UnitIdForUuid(Entry.Uuid)
 		if UnitId and Units[UnitId] then
 			local Farm = IsFarm(UnitId)
@@ -3630,7 +3654,12 @@ end
 
 function Match.UpgradeTick()
 	local Candidates = {}
+	local Owned = Account.Collection().owned_units or {}
 	for _, Model in ipairs(Match.Models()) do
+		local Uuid = StatValue(Model, "uuid")
+		if Uuid and type(Owned[tostring(Uuid)]) ~= "table" then
+			continue -- never spend on a model we do not own
+		end
 		local UnitId = Match.UnitIdOf(Model)
 		local Level = tonumber(StatValue(Model, "upgrade"))
 		local Max = tonumber(StatValue(Model, "max_upgrade"))
@@ -3792,7 +3821,7 @@ function Match.Decide()
 		return "leave"
 	end
 	-- a challenge reset (:00 / :30) happened while this match was running
-	if Config.DoChallenges and Account.Level() >= Config.NormalChallengeLevel
+	if ChallengesEnabled() and Account.Level() >= Config.NormalChallengeLevel
 		and Lobby.Slot() > (State.ChallengeSlot or 0) then
 		Log("challenge reset - leaving")
 		return "leave"
@@ -3801,6 +3830,15 @@ function Match.Decide()
 end
 
 function Match.Finish()
+	-- the game's get_*_challenge response has no dependable cleared flag, so
+	-- record the uuid here (same ledger the old one-click script used) to stop
+	-- re-queuing the same daily/normal challenge on later lobby visits
+	local Current = State.Current
+	if Current and Current.Kind == "challenge" and Current.Mode and Current.Uuid then
+		State.Clear[Current.Mode] = Current.Uuid
+		SaveState()
+		Log("challenge %s (%s) marked done", Current.Mode, tostring(Current.Uuid))
+	end
 	task.wait(2)
 	local Decision = Match.Decide()
 	Log("match over - %s", Decision)
