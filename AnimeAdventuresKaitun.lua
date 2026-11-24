@@ -30,7 +30,8 @@
 -- TRAITS
 --   once CompassUnit is owned: reroll traits with tokens -> star remnants ->
 --   limited remnants, always keeping Unique. Re-reads the unit before each
---   roll, stops on Unique, max 200 rolls. Runs once per unit (saved to disk).
+--   roll, stops on Unique or when reroll resources run out. Runs once per unit
+--   (saved to disk).
 --
 -- AUTO SELL
 --   after summoning / hunting and on each lobby visit. Never sells locked,
@@ -41,7 +42,11 @@
 --   small lobby status card; full-screen black-screen stats dashboard in
 --   matches with a bottom-right ON/OFF toggle. Choice persists between servers.
 --
--- CONFIG: edit Config below or set getgenv().Kaitun before running.
+-- CONFIG: edit Config below or set getgenv().Kaitun before running. Any key
+--   you leave out keeps its Config default. Accepted getgenv keys: TargetLevel,
+--   CompassUnit, Team, RollAtGems, SaveGems, Challenges,
+--   ChallengesOnlyAfterCompass, FpsBoost, AutoSell, SkipCutscenes, StatsOverlay,
+--   Summon, LoseWave, AutoTrait, TraitKeep, TraitSources, TraitMinResources.
 -- Debug: getgenv().AAKaitun (State/Lobby/Match/Account), getgenv().AAKaitunStop.
 -- end header
 
@@ -102,6 +107,7 @@ end
 local InvokeServer = EndpointsClient.invoke_server
 local LobbyServiceClient = SafeLoad("load_client_service", "LobbyServiceClient")
 local LevelServiceCore = SafeLoad("load_core_service", "LevelServiceCore")
+local UnitServiceCore = SafeLoad("load_core_service", "UnitServiceCore")
 
 local Units = SafeLoad("load_data", "Units") or {}
 local Attacks = SafeLoad("load_data", "Attacks") or {}
@@ -185,6 +191,9 @@ local Config = {
 	ShowStatus = true,            -- small lobby status card
 	StatsOverlay = true,          -- black screen + full stats panel in matches
 	AutoSell = true,              -- sell spare units so the inventory never fills
+	FpsBoost = true,              -- run the embedded FPS optimizer inside matches
+	ChallengesOnlyAfterCompass = false, -- once the compass unit is owned, stop
+	                             -- joining story/infinite (challenges still run)
 	MatchmakingRetries = 4,
 	MatchmakingCooldown = 21,
 	QueueTimeout = 180,
@@ -194,7 +203,6 @@ local Config = {
 	TraitKeep = { "unique" },
 	TraitSources = { "token", "remnant", "remnant_ltd" },
 	TraitMinResources = 0,
-	MaxTraitRolls = 999,
 	TraitRollDelay = 0.25,
 	TraitChangeTimeout = 5,
 }
@@ -211,6 +219,10 @@ if type(User) == "table" then
 	if User.CompassUnit ~= nil then Config.CompassUnit = tostring(User.CompassUnit):lower() end
 	if type(User.Team) == "table" then Config.Team = User.Team end
 	if User.Challenges ~= nil then Config.DoChallenges = User.Challenges and true or false end
+	if User.ChallengesOnlyAfterCompass ~= nil then
+		Config.ChallengesOnlyAfterCompass = User.ChallengesOnlyAfterCompass and true or false
+	end
+	if User.FpsBoost ~= nil then Config.FpsBoost = User.FpsBoost and true or false end
 	if User.StatsOverlay ~= nil then
 		Config.StatsOverlay = User.StatsOverlay and true or false
 		Config.ShowStatus = Config.StatsOverlay
@@ -1882,8 +1894,10 @@ function Lobby.AutoRollTraits(UnitId)
 		return
 	end
 
+	-- no roll cap: keep going until Unique/kept trait lands, resources run out,
+	-- or a roll stops producing any change. Rolls is only a log counter.
 	local Rolls, GotUnique = 0, false
-	while Rolls < Config.MaxTraitRolls do
+	while true do
 		-- re-read live state before spending anything
 		Copy = TraitCopy(UnitId) or Copy
 		Current = UnitTraitList(Copy.Unit)
@@ -1951,6 +1965,11 @@ end
 -- auto sell - keep equipped + locked + one copy of team/compass units,
 -- sell every other level-1 unit so the inventory (cap 100) never overflows
 -- ============================================================================
+-- profile.collection.owned_units entries do NOT carry a `level` field - they
+-- carry `xp`. The game derives the unit level from that xp via
+-- UnitServiceCore.calculate_level (verified live: xp=125 -> level 2,
+-- xp=286 -> level 4). Falling back to 0 here made auto sell treat every
+-- leveled unit as level 1 and sell it.
 local function UnitLevelOf(Unit)
 	if type(Unit) ~= "table" then
 		return 0
@@ -1959,6 +1978,22 @@ local function UnitLevelOf(Unit)
 		local Value = tonumber(Unit[Key])
 		if Value then
 			return Value
+		end
+	end
+	local Xp = tonumber(Unit.xp)
+	if not Xp then
+		return 0
+	end
+	if UnitServiceCore and UnitServiceCore.calculate_level then
+		local Ok, Level = pcall(UnitServiceCore.calculate_level, nil, Xp)
+		if Ok and tonumber(Level) then
+			return math.floor(tonumber(Level))
+		end
+	end
+	if LevelServiceCore and LevelServiceCore.calculate_level then
+		local Ok, Level = pcall(LevelServiceCore.calculate_level, nil, Xp)
+		if Ok and tonumber(Level) then
+			return math.floor(tonumber(Level))
 		end
 	end
 	return 0
@@ -2658,6 +2693,14 @@ function Lobby.Plan()
 				end
 			end
 		end
+	end
+
+	-- challenges-only mode: once the compass UNIT is actually owned (the pick
+	-- alone does not count), stop joining story and infinite. Daily/normal
+	-- challenges above still run on every lobby visit.
+	if Config.ChallengesOnlyAfterCompass and Config.CompassUnit
+		and Account.HasUnit(Config.CompassUnit) then
+		return "idle"
 	end
 
 	local Level = Account.Level()
@@ -3768,7 +3811,9 @@ end
 
 function Match.Run()
 	Log("match mode")
-	Fps.Apply() -- optimizer runs in matches only, never in the lobby
+	if Config.FpsBoost then
+		Fps.Apply() -- optimizer runs in matches only, never in the lobby
+	end
 	Match.Init()
 	Match.Settings()
 	if Config.StatsOverlay then

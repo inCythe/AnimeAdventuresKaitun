@@ -30,7 +30,8 @@ getgenv().Kaitun = {
 	NormalChallengeLevel = 15, -- level gate for the normal challenge
 	DailyChallengeLevel = 25,  -- level gate for the daily challenge
 	Challenges = true,         -- join challenges when available
-	ChallengesOnlyAfterCompass = false, -- (accepted for compatibility)
+	ChallengesOnlyAfterCompass = false, -- once the compass unit is owned, skip
+	                                    -- story/infinite; challenges still run
 	DoInfinite = true,         -- allow Infinite after TargetLevel
 
 	-- compass / summoning / hunting -----------------------------------------
@@ -60,6 +61,7 @@ getgenv().Kaitun = {
 	Claims = true,             -- daily / missions / levels / quests / battlepass
 	AcceptMissions = true,     -- accept untaken board missions
 	StatsOverlay = true,       -- small lobby card + match black-screen panel
+	FpsBoost = true,           -- FPS optimizer inside matches
 	SkipCutscenes = true,      -- stub summon/reward/hatch cinematics
 
 	-- trait reroll -----------------------------------------------------------
@@ -67,7 +69,6 @@ getgenv().Kaitun = {
 	TraitKeep = { "unique" },  -- Unique is always kept; add e.g. "reaper"
 	TraitSources = { "token", "remnant", "remnant_ltd" },
 	TraitMinResources = 0,
-	MaxTraitRolls = 200,
 	TraitRollDelay = 0.25,
 	TraitChangeTimeout = 5,
 
@@ -141,10 +142,14 @@ Infinite. Challenges are re-checked every `:00`/`:30` reset slot.
   black-screen toggle. Delete it to reset progression flags.
 - **Traits:** resources are spent tokens → star remnants → limited remnants.
   Before every roll the live traits are re-read; a kept trait stops the loop.
-  Unique is always in the keep set. Result is saved so it runs once per unit.
+  Unique is always in the keep set. There is no roll cap - it keeps going until
+  a kept trait lands or the reroll resources run out. Result is saved so it
+  runs once per unit.
 - **Auto sell:** keeps locked/equipped units, level > 1 units, Mythic/Secret
-  units, and one copy of each configured Team/Compass unit. Everything else is
-  sent to `sell_units` in batches of 50 and the owned count is verified.
+  units, and one copy of each configured Team/Compass unit. Unit level is
+  derived from `owned_units[].xp` with `UnitServiceCore.calculate_level`, not
+  from a `level` field (which the collection data does not contain). Everything
+  else is sent to `sell_units` in batches of 50 and the owned count is verified.
 - **Votes:** deliberately fire-once per popup. No idle spam, no early firing.
 - **Teleports:** `queue_on_teleport` reloads `AnimeAdventuresKaitun.lua` from
   the executor workspace (HTTP fallback), and embeds your config so it still
