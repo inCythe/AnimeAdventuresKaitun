@@ -3028,8 +3028,43 @@ function Match.Models()
 	return Out
 end
 
+-- The replicated money stat lags the server. Reserve every spend we fire and
+-- subtract it from affordability until the balance actually drops, so two
+-- actions in a row can never be sent against the same money.
+Match.Pending = {}
+Match.LastAction = 0
+
+function Match.CanAct()
+	return os.clock() - Match.LastAction >= Config.ActionDelay
+end
+
 function Match.Money()
-	return Account.Money()
+	local Raw = Account.Money()
+	if not Raw then
+		return nil
+	end
+	local Now = os.clock()
+	local Held = 0
+	for Index = #Match.Pending, 1, -1 do
+		local Spend = Match.Pending[Index]
+		if Now - Spend.At > 2 or Raw < Spend.Before then
+			table.remove(Match.Pending, Index)
+		else
+			Held += Spend.Cost
+		end
+	end
+	return math.max(0, Raw - Held)
+end
+
+-- Called immediately before firing a spend: reserves the cost and starts the
+-- ActionDelay window for ALL actions (place and upgrade share this throttle).
+local function Reserve(Cost)
+	Match.Pending[#Match.Pending + 1] = {
+		Cost = Cost,
+		Before = Account.Money() or 0,
+		At = os.clock(),
+	}
+	Match.LastAction = os.clock()
 end
 
 -- ============================================================================
@@ -3582,6 +3617,9 @@ function Match.PickNode(UnitId, Farm)
 end
 
 function Match.TryPlace(Entry)
+	if not Match.CanAct() then
+		return false -- one action per ActionDelay, shared with upgrades
+	end
 	local Node = Match.PickNode(Entry.UnitId, Entry.Farm)
 	if not Node then
 		return false
@@ -3602,7 +3640,7 @@ function Match.TryPlace(Entry)
 	end
 
 	local Cost = Match.UnitCost(Entry.UnitId)
-	if not Cost or Account.Money() < Cost then
+	if not Cost or Match.Money() < Cost then
 		return false
 	end
 	if Match.Blocked(Cf.Position) then
@@ -3610,6 +3648,7 @@ function Match.TryPlace(Entry)
 		return false
 	end
 
+	Reserve(Cost)
 	local Before = #Match.Models()
 	local Ok, Result = Util.Call(10, InvokeServer, "spawn_unit", Entry.Uuid, Cf)
 	if not (Ok and Result) then
@@ -3680,14 +3719,17 @@ function Match.UpgradeTick()
 		if Done >= Config.UpgradesPerTick then
 			break
 		end
-		if Entry.Model.Parent and Account.Money() >= Entry.Cost then
+		if not Match.CanAct() then
+			break -- respect ActionDelay across placements AND upgrades
+		end
+		if Entry.Model.Parent and Match.Money() >= Entry.Cost then
+			Reserve(Entry.Cost)
 			local Ok, Result = pcall(function()
 				return InvokeServer("upgrade_unit_ingame", Entry.Model)
 			end)
 			if Ok and Result ~= false then
 				Done += 1
 				Log("upgraded %s -> %d", Entry.UnitId, Entry.Level + 1)
-				task.wait(Config.ActionDelay)
 			end
 		end
 	end
@@ -3707,6 +3749,8 @@ function Match.Reset(Reason)
 	Match.Tries = 0
 	Match.LastScan = -100
 	Match.Fails = 0
+	Match.Pending = {}
+	Match.LastAction = 0
 	Log("new map (%s)", tostring(Reason))
 end
 
