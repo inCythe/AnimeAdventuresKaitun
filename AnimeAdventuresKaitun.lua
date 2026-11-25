@@ -2898,18 +2898,41 @@ local function LevelStats(UnitId, Level)
 	return Merged
 end
 
+-- The game's own stat function is the source of truth: it folds level, IVs
+-- (trait_stats potency/speed/range), relics and limit break into one multiplier
+-- and reproduces the numbers on the unit card (e.g. range 22 * 1.2099 = 26.6).
+local function GameStatMultiplier(Unit, Level, Name)
+	if not UnitServiceCore or type(UnitServiceCore.calculate_static_stat_multiplier) ~= "function" then
+		return nil
+	end
+	local Ok, Value = pcall(UnitServiceCore.calculate_static_stat_multiplier,
+		Unit, Level, Name, Unit.trait_stats)
+	return Ok and tonumber(Value) or nil
+end
+
 local function ScoreUnit(Unit)
 	local Level = UnitLevelOf(Unit)
 	local Stats = LevelStats(Unit.unit_id, Level)
-	local Damage = tonumber(Stats.damage) or 0
-	local Cooldown = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown) or 0
-	local Dps = Cooldown > 0 and (Damage / Cooldown) or Damage
-	local Potency, Speed, Range = TraitMultipliers(Unit)
-	-- potency boosts damage, speed boosts attack frequency, both scale DPS.
-	-- shiny is cosmetic only - it does not change stats.
-	local Score = Dps * Potency * Speed
-	-- tiny tie-breakers that never outrank a real DPS difference
-	Score += Damage * 0.0001 + (tonumber(Stats.range) or 0) * 0.00001 + Range * 0.000001
+	local Def = Units[Unit.unit_id] or {}
+	local Damage = tonumber(Stats.damage) or tonumber(Def.damage) or 0
+	local Cooldown = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown)
+		or tonumber(Def.attack_cooldown) or 0
+
+	-- prefer the game's real multipliers; fall back to the manual math
+	local DamageMul = GameStatMultiplier(Unit, Level, "damage")
+	local SpeedMul = GameStatMultiplier(Unit, Level, "speed")
+	local RangeMul = GameStatMultiplier(Unit, Level, "range")
+	if not DamageMul then
+		local Potency, Speed, Range = TraitMultipliers(Unit)
+		DamageMul, SpeedMul, RangeMul = Potency, Speed, Range
+	end
+
+	local RealDamage = Damage * (DamageMul or 1)
+	local RealCooldown = Cooldown / (SpeedMul and SpeedMul > 0 and SpeedMul or 1)
+	local Dps = RealCooldown > 0 and (RealDamage / RealCooldown) or RealDamage
+	-- shiny is cosmetic only; stat_luck and rarity are not damage stats
+	local Score = Dps
+	Score += RealDamage * 0.000001 + (tonumber(Stats.range) or 0) * (RangeMul or 1) * 0.000001
 	return Score
 end
 
