@@ -4373,7 +4373,8 @@ end
 
 function Match.Decide()
 	local Current = State.Current or { Kind = "story" }
-	if Current.Kind == "challenge" then
+	local Gamemode = Loader.LevelData and Loader.LevelData._gamemode
+	if Current.Kind == "challenge" or Gamemode == "challenge" then
 		LogT("End", "challenge finished -> leave")
 		return "leave"
 	end
@@ -4484,8 +4485,13 @@ function Match.Run()
 				LoseVoted = false
 				Match.Reset("new match")
 			end
-			-- act 6 is a full clear, not a loop: never vote lose there
-			if not LoseVoted and Config.LoseWave > 0 and Current.Kind ~= "act6" then
+			-- act 6 is a full clear and challenges must be completed: never
+			-- vote lose there. Check the game's own gamemode too, so a stale
+			-- or missing saved run kind can't make us lose a challenge.
+			local Gamemode = Loader.LevelData and Loader.LevelData._gamemode
+			local IsChallenge = Current.Kind == "challenge" or Gamemode == "challenge"
+			if not LoseVoted and Config.LoseWave > 0 and Current.Kind ~= "act6"
+				and not IsChallenge then
 				local Wave = Match.Wave()
 				if Wave and Wave >= Config.LoseWave then
 					LoseVoted = true
