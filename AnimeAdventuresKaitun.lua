@@ -163,6 +163,7 @@ local Config = {
 	DailyChallengeLevel = 25,
 	DoChallenges = true,
 	DoInfinite = true,
+	ChallengeResetGrace = 20,     -- ignore resets inside this window after :00/:30
 
 	-- summoning / hunting ----------------------------------------------------
 	Summon10Once = true,          -- one 10x roll per account (saved to disk)
@@ -3314,7 +3315,8 @@ local function ChallengesEnabled()
 	return Config.DoChallenges == true
 end
 
--- challenges reset every :00 and :30, so the slot number doubles as a clock
+-- challenges reset every :00 and :30. The slot flips a little after the
+-- boundary so a reset is not detected while the server is still catching up.
 function Lobby.Slot()
 	local Now = os.time()
 	local Ok, Server = pcall(function()
@@ -3323,7 +3325,7 @@ function Lobby.Slot()
 	if Ok and tonumber(Server) then
 		Now = Server
 	end
-	return math.floor(Now / 1800)
+	return math.floor((Now - (tonumber(Config.ChallengeResetGrace) or 0)) / 1800)
 end
 
 function Lobby.JoinChallenge(Def, Uuid)
@@ -3366,9 +3368,37 @@ end
 -- ============================================================================
 -- planner
 -- ============================================================================
+-- returns Def, Uuid, Reachable. Only the remote reply + our saved ledger decide
+-- whether a challenge is still pending.
+local function PickChallenge(Level)
+	local Reachable = false
+	for _, Def in ipairs(Lobby.ChallengeDefs()) do
+		if Level >= Def.MinLevel then
+			local Data, Ok = Util.Invoke(Def.Get)
+			if Ok and type(Data) == "table" then
+				Reachable = true
+				local Uuid = Data.current_uuid and tostring(Data.current_uuid) or nil
+				local Cleared = Data.completed == true or Data.cleared == true
+					or Data.already_completed == true or Data.claimed == true
+					or Data.already_claimed == true
+				if Uuid then
+					Cleared = Cleared or State.Clear[Def.Mode] == Uuid
+				end
+				if Uuid and not Cleared then
+					return Def, Uuid, true
+				end
+			end
+		end
+	end
+	return nil, nil, Reachable
+end
+
 function Lobby.Plan()
+	local Level = Account.Level()
+	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
+		State.HuntDone and "done" or "pending")
+
 	if Lobby.NeedHunt() then
-		UI.Set("Hunting " .. Account.UnitName(Lobby.HuntTarget()))
 		if Lobby.Hunt() then
 			Lobby.EquipTeam()
 			Lobby.AutoSell()
@@ -3377,47 +3407,34 @@ function Lobby.Plan()
 	end
 
 	if ChallengesEnabled() then
-		local Level = Account.Level()
-		if Level >= Config.NormalChallengeLevel then
-			-- remember that this reset was looked at, so the match can tell
-			-- whether a new reset happened while it was running
-			State.ChallengeSlot = Lobby.Slot()
+		local Slot = Lobby.Slot()
+		local Def, Uuid, Reachable = PickChallenge(Level)
+		if Reachable then
+			-- remember this reset was handled so the match can detect a new one
+			State.ChallengeSlot = Slot
 			SaveState()
 		end
-		for _, Def in ipairs(Lobby.ChallengeDefs()) do
-			if Level >= Def.MinLevel then
-				local Uuid = Lobby.ChallengeUuid(Def)
-				if Uuid then
-					UI.Set("Joining " .. Def.Label)
-					return Lobby.JoinChallenge(Def, Uuid) and "queued" or "idle"
-				end
-			end
+		if Def then
+			UI.Set("Joining " .. Def.Label)
+			return Lobby.JoinChallenge(Def, Uuid) and "queued" or "idle"
 		end
 	end
 
-	-- challenges-only mode: once the compass UNIT is actually owned (the pick
-	-- alone does not count), stop joining story and infinite. Daily/normal
-	-- challenges above still run on every lobby visit.
-	if Config.ChallengesOnlyAfterCompass and Config.CompassUnit
-		and Account.HasUnit(Config.CompassUnit) then
-		return "idle"
-	end
-
-	local Level = Account.Level()
 	if Level < Config.TargetLevel then
 		UI.Set("Story loop (level " .. Level .. "/" .. Config.TargetLevel .. ")")
 		return Lobby.JoinStory() and "joined" or "idle"
 	end
-	-- full-clear act 6 first: the world skipper jumps acts 1-5, then we clear
-	-- act 6 and leave. Infinite is only joined once act 6 is already cleared.
-	if Config.SkipStory then
-		local Joined, AlreadyCleared = Lobby.JoinAct6()
-		if Joined then
-			return "joined"
-		end
-		if not AlreadyCleared then
-			return "idle" -- skip/join failed: retry, never skip straight to Infinite
-		end
+
+	-- one attempt at act 6; if it is cleared or fails, move on to infinite
+	if Lobby.JoinAct6() == true then
+		return "joined"
+	end
+
+	-- challenges-only: once the compass unit is actually owned, stop joining
+	-- infinite. Story still runs until TargetLevel so low levels keep growing.
+	if Config.ChallengesOnlyAfterCompass and Config.CompassUnit
+		and Account.HasUnit(Config.CompassUnit) then
+		return "idle"
 	end
 	if Config.DoInfinite then
 		UI.Set("Infinite loop (level " .. Level .. ")")
