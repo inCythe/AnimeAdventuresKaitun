@@ -2864,9 +2864,9 @@ local function ScoreUnit(Unit)
 	local Cooldown = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown) or 0
 	local Dps = Cooldown > 0 and (Damage / Cooldown) or Damage
 	local Potency, Speed, Range = TraitMultipliers(Unit)
-	-- potency boosts damage, speed boosts attack frequency, both scale DPS;
-	-- shiny is a flat 1.5x multiplier in the game.
-	local Score = Dps * Potency * Speed * (Unit.shiny and 1.5 or 1)
+	-- potency boosts damage, speed boosts attack frequency, both scale DPS.
+	-- shiny is cosmetic only - it does not change stats.
+	local Score = Dps * Potency * Speed
 	-- tiny tie-breakers that never outrank a real DPS difference
 	Score += Damage * 0.0001 + (tonumber(Stats.range) or 0) * 0.00001 + Range * 0.000001
 	return Score
