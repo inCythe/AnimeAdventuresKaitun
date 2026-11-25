@@ -1493,7 +1493,7 @@ task.spawn(function()
 			LogT("Cinematic", "hooked %d function(s)", Cinematic.Count)
 		end
 		task.wait(1)
-	end)
+	end
 end)
 
 -- ============================================================================
