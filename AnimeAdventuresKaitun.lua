@@ -2580,12 +2580,16 @@ end
 -- Force = retry even if a previous attempt this session failed (used right
 -- before the first summon, which must never happen before the compass pick).
 function Lobby.UseCompass(Force)
-	if not Config.CompassUnit or CompassDone() then
-		return true
+	if not Config.CompassUnit then
+		return false
 	end
+	-- the GUI slot is the source of truth, re-checked on every lobby visit
 	if CompassUsedInGui() then
-		State.Compass = true
-		SaveState()
+		if not CompassDone() then
+			State.Compass = true
+			State.CompassDone = true
+			SaveState()
+		end
 		return true
 	end
 	if CompassTried and not Force then
@@ -2669,7 +2673,7 @@ function Lobby.SummonOnce()
 	end
 	-- The compass pick must be used before the very first summon. Retry it
 	-- here even if the earlier lobby pass failed, and defer the roll.
-	if Config.CompassUnit and not Lobby.UseCompass(true) then
+	if Config.CompassUnit and not CompassDone() and not Lobby.UseCompass(true) then
 		Log("compass not used yet - deferring the first summon to the next lobby visit")
 		return
 	end
@@ -3425,13 +3429,21 @@ function Lobby.Plan()
 		return Lobby.JoinStory() and "joined" or "idle"
 	end
 
-	-- one attempt at act 6; if it is cleared or fails, move on to infinite
-	if Lobby.JoinAct6() == true then
-		return "joined"
+	-- full-clear act 6 first: the world skipper jumps acts 1-5, then we clear
+	-- act 6 and leave. Infinite is only joined once act 6 is already cleared.
+	if Config.SkipStory then
+		local Joined, AlreadyCleared = Lobby.JoinAct6()
+		if Joined then
+			return "joined"
+		end
+		if not AlreadyCleared then
+			return "idle" -- skip/join failed: retry, never skip straight to Infinite
+		end
 	end
 
-	-- challenges-only: once the compass unit is actually owned, stop joining
-	-- infinite. Story still runs until TargetLevel so low levels keep growing.
+	-- challenges-only mode: once the compass UNIT is actually owned (the pick
+	-- alone does not count), stop joining story and infinite. Daily/normal
+	-- challenges above still run on every lobby visit.
 	if Config.ChallengesOnlyAfterCompass and Config.CompassUnit
 		and Account.HasUnit(Config.CompassUnit) then
 		return "idle"
