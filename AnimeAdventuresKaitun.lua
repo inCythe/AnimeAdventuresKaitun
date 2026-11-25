@@ -228,7 +228,7 @@ local Config = {
 	-- auto trait reroll (compass unit; Unique is always kept) ----------------
 	AutoTrait = true,
 	TraitKeep = { "unique" },
-	TraitSources = { "token", "remnant", "remnant_ltd" },
+	TraitSources = { "token", "star_remnant", "star_remnant_limited" },
 	TraitMinResources = 0,
 	TraitRollDelay = 0.25,
 	TraitChangeTimeout = 5,
@@ -1870,13 +1870,27 @@ local function TraitResources()
 		and P.inventory.normal_items or {}
 	return {
 		token = tonumber(P.trait_reroll_tokens) or 0,
-		remnant = tonumber(Items.star_remnant) or 0,
-		remnant_ltd = tonumber(Items.star_remnant_limited) or 0,
+		star_remnant = tonumber(Items.star_remnant) or 0,
+		star_remnant_limited = tonumber(Items.star_remnant_limited) or 0,
 	}
 end
 
+-- accept the old aliases too, but always work with the real item ids
+local function NormalizeTraitSource(Source)
+	local S = tostring(Source or ""):lower()
+	if S == "remnant" then
+		return "star_remnant"
+	elseif S == "remnant_ltd" or S == "limited" then
+		return "star_remnant_limited"
+	elseif S == "tokens" then
+		return "token"
+	end
+	return S
+end
+
 local function NextTraitSource(Res)
-	for _, Source in ipairs(Config.TraitSources or {}) do
+	for _, Raw in ipairs(Config.TraitSources or {}) do
+		local Source = NormalizeTraitSource(Raw)
 		if (tonumber(Res[Source]) or 0) > Config.TraitMinResources then
 			return Source
 		end
@@ -1885,9 +1899,9 @@ local function NextTraitSource(Res)
 end
 
 local function SpendTraitReroll(Source, Uuid)
-	if Source == "remnant" then
+	if Source == "star_remnant" then
 		return Util.Call(10, InvokeServer, "use_item", "star_remnant", { unit_uuid = Uuid })
-	elseif Source == "remnant_ltd" then
+	elseif Source == "star_remnant_limited" then
 		return Util.Call(10, InvokeServer, "use_item", "star_remnant_limited", { unit_uuid = Uuid })
 	end
 	return Util.Call(10, InvokeServer, "request_token_trait_reroll", Uuid)
@@ -2634,7 +2648,9 @@ local function JoinSolo(LevelId, Difficulty, SkipWorld)
 			task.wait(0.5)
 		end
 		Log("locking %s in %s (%s, try %d)", LevelId, LobbyId, Difficulty, Attempt)
-		if Util.Invoke("request_lock_level", LobbyId, LevelId, false, Difficulty) then
+		-- third arg is the "friends only / private lock" flag: the game expects
+		-- true here (verified from the generated Cobalt call), false gets refused
+		if Util.Invoke("request_lock_level", LobbyId, LevelId, true, Difficulty) then
 			if LobbyServiceClient then
 				pcall(LobbyServiceClient.on_request_lock_level)
 			end

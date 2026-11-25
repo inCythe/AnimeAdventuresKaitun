@@ -64,7 +64,7 @@ getgenv().Kaitun = {
 	-- trait reroll -----------------------------------------------------------
 	AutoTrait = true,          -- start once the compass unit is owned
 	TraitKeep = { "unique" },  -- Unique is always kept; add e.g. "reaper"
-	TraitSources = { "token", "remnant", "remnant_ltd" },
+	TraitSources = { "token", "star_remnant", "star_remnant_limited" },
 	TraitMinResources = 0,
 	TraitRollDelay = 0.25,
 	TraitChangeTimeout = 5,
