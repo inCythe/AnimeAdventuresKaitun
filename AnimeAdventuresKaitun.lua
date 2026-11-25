@@ -3238,49 +3238,64 @@ end
 -- the game's selected unit_id matches, then cache the "current/max" cap.
 function Match.DiscoverCaps()
 	local GuiService = game:GetService("GuiService")
+	local VIM = game:GetService("VirtualInputManager")
 	local Previous = nil
 	pcall(function()
 		Previous = GuiService.SelectedObject
 	end)
+	local function IsSelected(UnitId)
+		local Now = Match.Grid and Match.Grid.unit_id or nil
+		if not Now then
+			return false
+		end
+		if tostring(Now):lower() == tostring(UnitId):lower() then
+			return true
+		end
+		local Def = Units[UnitId]
+		local Name = type(Def) == "table" and Def.name or nil
+		return type(Name) == "string" and tostring(Name):lower() == tostring(Now):lower()
+	end
+
 	local Resolved, Failed = 0, {}
 	for Uuid, Slot in pairs(Match.Slots) do
 		if Match.Caps[Uuid] == nil then
 			local UnitId = UnitIdForUuid(Uuid)
 			local Selected = false
-			-- try one method at a time: combining them can toggle the slot off
-			local Methods = {
-				function()
-					if Match.Grid and Match.Grid._on_select_single_unit then
-						Match.Grid._on_select_single_unit(UnitId)
-					end
-				end,
-				function()
-					Slot.Activated:Fire()
-				end,
-				function()
-					GuiService.SelectedObject = Slot
-				end,
-			}
-			for Index, Method in ipairs(Methods) do
-				pcall(Method)
-				task.wait(0.18)
-				local Now = Match.Grid and Match.Grid.unit_id or nil
-				if Now == UnitId then
-					Selected = true
-					break
-				end
+			-- same select-and-press technique the group joiner uses
+			pcall(function()
+				Slot.Selectable = true
+				GuiService.SelectedObject = Slot
+				task.wait(0.08)
+				VIM:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+				task.wait(0.02)
+				VIM:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+				task.wait(0.15)
+				Selected = IsSelected(UnitId)
+			end)
+			-- fallback: absolute mouse click on the slot centre
+			if not Selected then
+				pcall(function()
+					local Centre = Slot.AbsolutePosition + Slot.AbsoluteSize / 2
+					VIM:SendMouseButtonEvent(Centre.X, Centre.Y, 0, true, game, 0)
+					task.wait(0.02)
+					VIM:SendMouseButtonEvent(Centre.X, Centre.Y, 0, false, game, 0)
+					task.wait(0.15)
+					Selected = IsSelected(UnitId)
+				end)
 			end
 			if Selected then
 				local Max
-				for _, Child in ipairs(Slot:GetDescendants()) do
-					if Child:IsA("TextLabel") then
-						local Value = tonumber(tostring(Child.Text):match("%d+%s*/%s*(%d+)"))
-						if Value then
-							Max = Value
-							break
+				pcall(function()
+					for _, Child in ipairs(Slot:GetDescendants()) do
+						if Child:IsA("TextLabel") then
+							local Value = tonumber(tostring(Child.Text):match("%d+%s*/%s*(%d+)"))
+							if Value then
+								Max = Value
+								break
+							end
 						end
 					end
-				end
+				end)
 				if Max then
 					Match.Caps[Uuid] = Max
 					Resolved += 1
