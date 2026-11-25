@@ -321,6 +321,7 @@ end)
 local State = {
 	Summoned = false,   -- the one-time 10x was done
 	Compass = false,    -- the compass pick was used
+	CompassDone = false, -- same flag, name used by the older hosted build
 	RedeemedCodes = {}, -- backup ledger when profile.redeemed_codes lags
 	GroupDone = false,  -- group join confirmed once per account
 	GroupAttempts = 0,  -- lobby visits that tried the group dialog
@@ -2542,50 +2543,88 @@ end
 -- ============================================================================
 -- compass / summon / hunt
 -- ============================================================================
-local function CompassInGui()
+local CompassTried = false
+
+-- Compass usage is checked ONLY through the visible summon GUI slot. Owning
+-- the unit or a profile marker is NOT enough — the slot is the source of truth.
+local function CompassSlot()
 	local Gui = PlayerGui:FindFirstChild("SummonGUI")
-	if not Gui then
-		return false
-	end
-	for _, Node in ipairs(Gui:GetDescendants()) do
-		if Node.Name == Config.CompassId then
-			return true
-		end
-	end
-	return false
+	local Frames = Gui and Gui:FindFirstChild("BannerFrames")
+	local Banner = Frames and (Frames:FindFirstChild(Config.SummonBanner)
+		or Frames:FindFirstChild("EventClover"))
+	local Compass = Banner and Banner:FindFirstChild("CelestialCompass")
+	return Compass and Compass:FindFirstChild("Slot") or nil
 end
 
-function Lobby.Compass()
-	if not Config.CompassUnit or State.Compass then
-		return
+local function CompassUsedInGui()
+	local Slot = CompassSlot()
+	return Slot ~= nil and Slot:FindFirstChild(Config.CompassId) ~= nil
+end
+
+local function WaitForCompassGui(Timeout)
+	local Deadline = os.clock() + (Timeout or 6)
+	while os.clock() < Deadline do
+		if CompassUsedInGui() then
+			return true
+		end
+		task.wait(0.1)
 	end
-	-- the summon GUI slot is the source of truth (it survives a sold unit)
-	if CompassInGui() or Account.HasUnit(Config.CompassUnit) then
+	return CompassUsedInGui()
+end
+
+local function CompassDone()
+	return State.Compass == true or State.CompassDone == true
+end
+
+-- Force = retry even if a previous attempt this session failed (used right
+-- before the first summon, which must never happen before the compass pick).
+function Lobby.UseCompass(Force)
+	if not Config.CompassUnit or CompassDone() then
+		return true
+	end
+	if CompassUsedInGui() then
 		State.Compass = true
 		SaveState()
-		return
+		return true
 	end
+	if CompassTried and not Force then
+		return false
+	end
+	CompassTried = true
+
 	local Ep = Util.Endpoint("set_celestial_compass_pick")
 	if not Ep or not Ep:IsA("RemoteFunction") then
-		return
+		Log("compass remote not found")
+		return false
 	end
 	Log("compass -> %s", Account.UnitName(Config.CompassUnit))
 	local Ok, Result = Util.Call(5, function()
 		return Ep:InvokeServer(Config.CompassId, Config.CompassUnit)
 	end)
-	if not Ok or Result == false then
-		Log("compass pick refused")
-		return
+	if not Ok then
+		Log("compass failed: %s", tostring(Result))
+		return false
 	end
-	local Deadline = os.clock() + 6
-	repeat
-		task.wait(0.25)
-	until CompassInGui() or Account.HasUnit(Config.CompassUnit) or os.clock() >= Deadline
-	if CompassInGui() or Account.HasUnit(Config.CompassUnit) then
+	if type(Result) == "string" then
+		Log("compass replied: %s", Result)
+	end
+	if Result == false then
+		return false
+	end
+	-- only accept the pick once the slot actually appears in the GUI
+	if WaitForCompassGui(6) then
 		State.Compass = true
+		State.CompassDone = true
 		SaveState()
-		Log("compass pick confirmed")
+		Log("compass used -> %s (slot verified)", Config.CompassUnit)
+		return true
 	end
+	Log("compass pick sent but the slot is not visible yet - will retry next lobby visit")
+	return false
+end
+
+Lobby.Compass = function()
+	return Lobby.UseCompass(false)
 end
 
 -- The hatch result and the collection replicate after the buy_from_banner
@@ -2625,6 +2664,12 @@ end
 
 function Lobby.SummonOnce()
 	if not Config.Summon10Once or State.Summoned then
+		return
+	end
+	-- The compass pick must be used before the very first summon. Retry it
+	-- here even if the earlier lobby pass failed, and defer the roll.
+	if Config.CompassUnit and not Lobby.UseCompass(true) then
+		Log("compass not used yet - deferring the first summon to the next lobby visit")
 		return
 	end
 	local Banner = Banners[Config.SummonBanner]
