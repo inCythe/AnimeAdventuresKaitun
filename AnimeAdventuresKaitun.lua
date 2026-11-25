@@ -161,6 +161,7 @@ local Config = {
 	Summon10Once = true,          -- one 10x roll per account (saved to disk)
 	SummonBanner = "EventClover",
 	HuntFrom = 20000,             -- go hunting when gems reach this
+	HuntAtMinute = 0,             -- only hunt at XX:00 (nil = any time)
 	KeepGems = 0,                 -- never roll below this
 	MaxHuntRolls = 400,
 	CompassUnit = "elyssia",      -- the celestial compass pick (nil = skip)
@@ -241,6 +242,7 @@ if type(User) == "table" then
 	end
 	if Num(User.TargetLevel) then Config.TargetLevel = math.floor(Num(User.TargetLevel)) end
 	if Num(User.RollAtGems) then Config.HuntFrom = Num(User.RollAtGems) end
+	if Num(User.HuntAtMinute) then Config.HuntAtMinute = math.floor(Num(User.HuntAtMinute)) end
 	if Num(User.SaveGems) then Config.KeepGems = Num(User.SaveGems) end
 	if User.CompassUnit ~= nil then Config.CompassUnit = tostring(User.CompassUnit):lower() end
 	if type(User.Team) == "table" then Config.Team = User.Team end
@@ -2209,9 +2211,43 @@ function Lobby.HuntTarget()
 	return Account.UnitId(Config.CompassUnit)
 end
 
+-- Hunting is gated to a specific minute of the hour (XX:00 by default).
+-- Server time is used when available so a wrong local clock cannot bypass it.
+local LastHuntTimeLog = 0
+local function HuntMinute()
+	local Now = os.time()
+	local Ok, Server = pcall(function()
+		return workspace:GetServerTimeNow()
+	end)
+	if Ok and tonumber(Server) then
+		Now = Server
+	end
+	local Minute = math.floor(Now % 3600 / 60)
+	local Hour = math.floor(Now / 3600) % 24
+	return Minute, Hour
+end
+
+local function HuntTimeOk()
+	if Config.HuntAtMinute == nil then
+		return true
+	end
+	local Minute, Hour = HuntMinute()
+	if Minute ~= math.floor(Config.HuntAtMinute) then
+		if os.clock() - LastHuntTimeLog > 60 then
+			LastHuntTimeLog = os.clock()
+			LogT("Hunt", "waiting for :00 (server %02d:%02d)", Hour, Minute)
+		end
+		return false
+	end
+	return true
+end
+
 function Lobby.NeedHunt()
 	local Target = Lobby.HuntTarget()
 	if not Target or Account.HasUnit(Target) then
+		return false
+	end
+	if not HuntTimeOk() then
 		return false
 	end
 	return Account.Gems() >= Config.HuntFrom
