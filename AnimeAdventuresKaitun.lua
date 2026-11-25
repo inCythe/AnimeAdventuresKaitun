@@ -68,6 +68,22 @@ local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 local Env = (getgenv and getgenv()) or _G
 
+-- The loader queues itself AND the script queues BootCode for the next server,
+-- so two copies can start in the same place and race on spawn/upgrade remotes.
+-- PlayerGui is fresh after a teleport, so a marker here is a safe one-per-server
+-- guard that does not survive into the next match.
+if PlayerGui:FindFirstChild("AAKaitunRunning") then
+	print("[AA Kaitun] duplicate instance - exiting")
+	return
+end
+do
+	local Marker = Instance.new("ScreenGui")
+	Marker.Name = "AAKaitunRunning"
+	Marker.ResetOnSpawn = false
+	Marker.Enabled = false
+	Marker.Parent = PlayerGui
+end
+
 local function Log(Format, ...)
 	print(("[AA Kaitun] " .. Format):format(...))
 end
@@ -3867,7 +3883,9 @@ function Match.TryPlace(Entry)
 	Reserve(Cost)
 	local Before = #Match.Models()
 	local Ok, Result = Util.Call(10, InvokeServer, "spawn_unit", Entry.Uuid, Cf)
-	if not (Ok and Result) then
+	-- spawn_unit answers nil on SUCCESS (the model appearing is the proof).
+	-- Only an explicit false or a call failure is a real rejection.
+	if not Ok or Result == false then
 		Why("reject:place:" .. Entry.UnitId, "place %s: server rejected (ok=%s, result=%s) - %ds cooldown",
 			Tag, tostring(Ok), tostring(Result), Config.RejectCooldown)
 		Match.Claim(Node, Config.RejectCooldown)
@@ -4180,8 +4198,20 @@ function Match.Run()
 	end
 	Match.Init()
 	Match.Settings()
-	Match.RefreshSlots()
-	task.spawn(Match.DiscoverCaps)
+	-- the spawn GUI is built asynchronously: wait for the slots before trying
+	-- to read caps, and retry until they resolve (or the match is well underway)
+	task.spawn(function()
+		for Attempt = 1, 12 do
+			Match.RefreshSlots()
+			if Util.Count(Match.Slots) > 0 then
+				Match.DiscoverCaps()
+				if Util.Count(Match.Caps) == Util.Count(Match.Slots) then
+					break
+				end
+			end
+			task.wait(2)
+		end
+	end)
 	if Config.StatsOverlay then
 		UI.Overlay()
 	end
