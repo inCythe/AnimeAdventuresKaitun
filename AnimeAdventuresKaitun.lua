@@ -3990,6 +3990,9 @@ function Match.Run()
 	end
 	UI.Set("Match - starting")
 
+	-- the lobby stores the run kind here before teleporting; it can be nil on a
+	-- manual join, so always fall back to an empty table
+	local Current = State.Current or {}
 	local Handled = false
 	local LoseVoted = false
 	local LastUi = 0
