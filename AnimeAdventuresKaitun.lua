@@ -2131,7 +2131,7 @@ function Lobby.ClaimBattlepass()
 	-- with xp but their rewards are rejected. The game marks the active one.
 	local Track = GameplaySettings.CURRENT_BATTLEPASS
 	if type(Track) ~= "string" or Track == "" then
-		Track = "mana_october"
+		return -- no current pass marked: skip rather than guess
 	end
 	local Def, Info = Defs[Track], Data[Track]
 	if type(Def) ~= "table" or type(Info) ~= "table" then
