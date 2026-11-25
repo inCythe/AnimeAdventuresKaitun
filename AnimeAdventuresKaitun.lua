@@ -3272,17 +3272,6 @@ function Match.DiscoverCaps()
 				task.wait(0.15)
 				Selected = IsSelected(UnitId)
 			end)
-			-- fallback: absolute mouse click on the slot centre
-			if not Selected then
-				pcall(function()
-					local Centre = Slot.AbsolutePosition + Slot.AbsoluteSize / 2
-					VIM:SendMouseButtonEvent(Centre.X, Centre.Y, 0, true, game, 0)
-					task.wait(0.02)
-					VIM:SendMouseButtonEvent(Centre.X, Centre.Y, 0, false, game, 0)
-					task.wait(0.15)
-					Selected = IsSelected(UnitId)
-				end)
-			end
 			if Selected then
 				local Max
 				pcall(function()
