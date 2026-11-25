@@ -63,6 +63,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
+local GroupService = game:GetService("GroupService")
+local GuiService = game:GetService("GuiService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local GetHui = type(gethui) == "function" and gethui or nil
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
@@ -173,6 +178,11 @@ local Config = {
 	EquipTeam = true,
 
 	-- lobby chores -----------------------------------------------------------
+	-- join this group once per account, before redeeming codes
+	JoinGroup = true,
+	GroupId = 10611639,
+	GroupName = "Gomu",
+	GroupMaxAttempts = 3,
 	RedeemCodes = true,
 	Codes = {
 		{ "2MILLIONFAVES", 20 },
@@ -307,6 +317,8 @@ end)
 local State = {
 	Summoned = false,   -- the one-time 10x was done
 	Compass = false,    -- the compass pick was used
+	GroupDone = false,  -- group join confirmed once per account
+	GroupAttempts = 0,  -- lobby visits that tried the group dialog
 	Clear = {},         -- challenge mode -> uuid already handled
 	ChallengeSlot = 0,  -- the last 30-minute challenge slot the lobby handled
 	TraitRoll = {},     -- unit id -> { doneAt, gotUnique, traits, rolls }
@@ -339,6 +351,9 @@ local function LoadState()
 	end
 	if type(State.TraitRoll) ~= "table" then
 		State.TraitRoll = {}
+	end
+	if type(State.GroupAttempts) ~= "number" then
+		State.GroupAttempts = 0
 	end
 end
 
@@ -1429,10 +1444,12 @@ end
 -- ============================================================================
 -- cinematic skip (summon / hatch / reward popups)
 -- ============================================================================
--- Same hooker as skip_cutscenes.lua, running in the background: keep scanning
--- the GC and hook every matching function, with no "5 of 5" completion limit.
+-- Same hooker as skip_cutscenes.lua: hook once, verify, retry only if the
+-- lazy-loaded modules were not there yet. No perpetual scanning; the stub has
+-- a private upvalue tag so a replacement is never hooked again on a retry.
 local Cinematic = {
 	HookedFn = setmetatable({}, { __mode = "k" }), -- function identity, weak keys
+	HookedName = {},
 	Count = 0,
 }
 
@@ -1443,59 +1460,99 @@ local CINEMATIC_NAMES = {
 	on_show_item_hatch_effect = true,
 	on_units_hatched_through_banner = true,
 }
+local CINEMATIC_ATTEMPTS = 10
+local CINEMATIC_RETRY = 1
 
+local Sentinel = {}
 local function CinematicStub(...)
-	for _, Arg in ipairs({ ... }) do
-		if type(Arg) == "function" then
-			pcall(Arg)
+	if Sentinel then
+		for _, Arg in ipairs({ ... }) do
+			if type(Arg) == "function" then
+				pcall(Arg)
+			end
 		end
 	end
 end
-Cinematic.HookedFn[CinematicStub] = true -- never hook our own replacement
+Cinematic.HookedFn[CinematicStub] = true
+
+local function CinematicIsStub(Fn)
+	local Ok, _, Value = pcall(debug.getupvalue, Fn, 1)
+	return Ok and Value == Sentinel
+end
 
 local IsLClosure = type(islclosure) == "function" and islclosure or function() return true end
 
-task.spawn(function()
-	local Last = -1
-	while true do
-		if Config.SkipCutscenes then
-			local Ok, Gc = pcall(getgc, true)
-			if Ok and type(Gc) == "table" then
-				for _, Value in pairs(Gc) do
-					if typeof(Value) == "function" and not Cinematic.HookedFn[Value]
-						and IsLClosure(Value) then
-						local Info = debug.getinfo(Value)
-						local Name = Info and Info.name
-						if Name and CINEMATIC_NAMES[Name] then
-							hookfunction(Value, CinematicStub)
-							Cinematic.HookedFn[Value] = true
-							Cinematic.Count += 1
-						end
-					elseif type(Value) == "table" then
-						for Name in pairs(CINEMATIC_NAMES) do
-							local Fn = rawget(Value, Name)
-							if type(Fn) == "function" and not Cinematic.HookedFn[Fn]
-								and IsLClosure(Fn) then
-								hookfunction(Fn, CinematicStub)
-								Cinematic.HookedFn[Fn] = true
-								Cinematic.Count += 1
-								-- the field now holds our stub - don't hook it again
-								local Now = rawget(Value, Name)
-								if type(Now) == "function" then
-									Cinematic.HookedFn[Now] = true
-								end
-							end
-						end
-					end
+local function CinematicTryHook(Fn, Name, Owner)
+	if type(Fn) ~= "function" or Cinematic.HookedFn[Fn] or CinematicIsStub(Fn) then
+		return
+	end
+	if not pcall(hookfunction, Fn, CinematicStub) then
+		return
+	end
+	Cinematic.HookedFn[Fn] = true
+	Cinematic.HookedName[Name] = true
+	Cinematic.Count += 1
+	if Owner then
+		local Now = rawget(Owner, Name)
+		if type(Now) == "function" then
+			Cinematic.HookedFn[Now] = true
+		end
+	end
+end
+
+local function CinematicScanOnce()
+	if not Config.SkipCutscenes then
+		return
+	end
+	local Ok, Gc = pcall(getgc, true)
+	if not (Ok and type(Gc) == "table") then
+		return
+	end
+	for _, Value in pairs(Gc) do
+		if type(Value) == "function" and not Cinematic.HookedFn[Value]
+			and IsLClosure(Value) then
+			local Info = debug.getinfo(Value)
+			local Name = Info and Info.name
+			if Name and CINEMATIC_NAMES[Name] then
+				CinematicTryHook(Value, Name)
+			end
+		elseif type(Value) == "table" then
+			for Name in pairs(CINEMATIC_NAMES) do
+				local Fn = rawget(Value, Name)
+				if type(Fn) == "function" and not Cinematic.HookedFn[Fn]
+					and IsLClosure(Fn) then
+					CinematicTryHook(Fn, Name, Value)
 				end
 			end
 		end
-		if Cinematic.Count ~= Last then
-			Last = Cinematic.Count
-			LogT("Cinematic", "hooked %d function(s)", Cinematic.Count)
-		end
-		task.wait(1)
 	end
+end
+
+local function CinematicAllHooked()
+	for Name in pairs(CINEMATIC_NAMES) do
+		if not Cinematic.HookedName[Name] then
+			return false
+		end
+	end
+	return true
+end
+
+task.spawn(function()
+	for Attempt = 1, CINEMATIC_ATTEMPTS do
+		CinematicScanOnce()
+		if CinematicAllHooked() then
+			break
+		end
+		task.wait(CINEMATIC_RETRY)
+	end
+	local Missing = {}
+	for Name in pairs(CINEMATIC_NAMES) do
+		if not Cinematic.HookedName[Name] then
+			Missing[#Missing + 1] = Name
+		end
+	end
+	LogT("Cinematic", "hooked %d function(s)%s", Cinematic.Count,
+		#Missing > 0 and (" | still missing: " .. table.concat(Missing, ", ")) or "")
 end)
 
 -- ============================================================================
@@ -1557,6 +1614,146 @@ function GameSettings.Ensure(Which)
 			task.wait(0.15)
 		end
 	end
+end
+
+-- ============================================================================
+-- group join - once per account, before redeeming codes
+-- ============================================================================
+local function UiRoots()
+	local Roots = { game:GetService("CoreGui") }
+	if GetHui then
+		pcall(function()
+			local Hui = GetHui()
+			if Hui then
+				Roots[#Roots + 1] = Hui
+			end
+		end)
+	end
+	return Roots
+end
+
+local function Unselect()
+	pcall(function()
+		if GuiService.SelectedObject then
+			GuiService.SelectedObject = nil
+		end
+	end)
+end
+
+local function ButtonAlive(Button)
+	if not Button then
+		return false
+	end
+	local Ok, Alive = pcall(function()
+		return Button.Parent ~= nil and Button:IsDescendantOf(game) and Button.Visible
+	end)
+	return Ok and Alive
+end
+
+local function PressButton(Button)
+	pcall(function()
+		Button.Selectable = true
+		if GuiService.SelectedObject ~= Button then
+			GuiService.SelectedObject = Button
+			task.wait(0.05)
+		end
+		if GuiService.SelectedObject == Button and ButtonAlive(Button) then
+			VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+			task.wait(0.02)
+			VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+		end
+	end)
+end
+
+local function SpamButton(Button, Verify, Timeout)
+	local Deadline = os.clock() + Timeout
+	while os.clock() < Deadline do
+		if Verify() or not ButtonAlive(Button) then
+			break
+		end
+		PressButton(Button)
+		task.wait(0.1)
+	end
+	Unselect()
+	return Verify()
+end
+
+local function IsInGroup()
+	local Ok, Value = pcall(function()
+		return Player:IsInGroup(Config.GroupId)
+	end)
+	return Ok and Value == true
+end
+
+local function FindJoinButton()
+	for _, Root in ipairs(UiRoots()) do
+		local Ok, Button = pcall(function()
+			local Actions = Root.RobloxGui.FocusNavigationCoreScriptsWrapper.Main
+				.DialogContentWrapper.Folder.Dialog.DialogInner
+				.DialogBody.DialogActions.ActionsContainer
+			for _, Child in ipairs(Actions:GetChildren()) do
+				if Child:IsA("GuiButton") and Child.Name:sub(1, 2) == "1-" then
+					return Child
+				end
+			end
+			return nil
+		end)
+		if Ok and Button then
+			return Button
+		end
+	end
+	return nil
+end
+
+local function JoinGroup()
+	if IsInGroup() then
+		return true
+	end
+	LogT("Group", "opening join dialog for %s", Config.GroupName)
+	task.spawn(function()
+		pcall(function()
+			GroupService:PromptJoinAsync(Config.GroupId)
+		end)
+	end)
+	local Deadline = os.clock() + 15
+	while os.clock() < Deadline do
+		if IsInGroup() then
+			Unselect()
+			return true
+		end
+		local Button = FindJoinButton()
+		if Button then
+			SpamButton(Button, IsInGroup, 2)
+		else
+			task.wait(0.1)
+		end
+	end
+	Unselect()
+	return IsInGroup()
+end
+
+local function JoinGroupOnce()
+	if not Config.JoinGroup then
+		return
+	end
+	if IsInGroup() then
+		if not State.GroupDone then
+			State.GroupDone = true
+			SaveState()
+		end
+		return
+	end
+	if State.GroupDone or State.GroupAttempts >= Config.GroupMaxAttempts then
+		return
+	end
+	State.GroupAttempts += 1
+	SaveState()
+	local Joined = JoinGroup()
+	if Joined then
+		State.GroupDone = true
+		SaveState()
+	end
+	LogT("Group", "%s", Joined and "joined" or "not joined - will retry next lobby visit")
 end
 
 -- ============================================================================
@@ -3088,6 +3285,7 @@ function Lobby.Run()
 		UI.Lobby()
 	end
 
+	JoinGroupOnce() -- join once before claiming codes
 	Lobby.RedeemCodes()
 	Lobby.Compass()
 	Lobby.Claims()
