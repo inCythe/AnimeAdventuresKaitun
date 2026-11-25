@@ -2174,18 +2174,21 @@ local function OwnedCount()
 	return Util.Count(Account.Collection().owned_units or {})
 end
 
-local function SellAfterSummon(HatchBefore, CountBefore)
+local function WaitForSummonCollection(HatchBefore, CountBefore)
 	local Deadline = os.clock() + 8
 	local Changed = false
 	repeat
 		task.wait(0.15)
 		Changed = (HatchFingerprint() ~= HatchBefore) or (OwnedCount() ~= CountBefore)
 	until Changed or os.clock() >= Deadline
-	if Changed then
-		LogT("Sell", "new units replicated -> filtering collection")
-	else
-		LogT("Sell", "no replication detected -> filtering current collection")
-	end
+	LogT("Summon", Changed and "new units replicated" or "no replication detected - proceeding")
+	return Changed
+end
+
+-- Hunting runs its own sell after each batch; the one-time summon must NOT
+-- sell here, because Lobby.Run equips the team first and only then filters.
+local function SellAfterSummon(HatchBefore, CountBefore)
+	WaitForSummonCollection(HatchBefore, CountBefore)
 	Lobby.AutoSell()
 end
 
@@ -2215,7 +2218,8 @@ function Lobby.SummonOnce()
 		State.Summoned = true
 		SaveState()
 		LogT("Summon", "first 10x done on %s", Config.SummonBanner)
-		SellAfterSummon(HatchBefore, CountBefore)
+		-- wait for the pulled units, then let Lobby.Run equip before selling
+		WaitForSummonCollection(HatchBefore, CountBefore)
 	else
 		Log("first 10x was ignored - will retry next visit")
 	end
