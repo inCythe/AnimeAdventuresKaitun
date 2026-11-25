@@ -323,7 +323,6 @@ local State = {
 	Summoned = false,   -- the one-time 10x was done
 	Compass = false,    -- the compass pick was used
 	CompassDone = false, -- same flag, name used by the older hosted build
-	RedeemedCodes = {}, -- backup ledger when profile.redeemed_codes lags
 	GroupDone = false,  -- group join confirmed once per account
 	GroupAttempts = 0,  -- lobby visits that tried the group dialog
 	Clear = {},         -- challenge mode -> uuid already handled
@@ -358,9 +357,6 @@ local function LoadState()
 	end
 	if type(State.TraitRoll) ~= "table" then
 		State.TraitRoll = {}
-	end
-	if type(State.RedeemedCodes) ~= "table" then
-		State.RedeemedCodes = {}
 	end
 	if type(State.GroupAttempts) ~= "number" then
 		State.GroupAttempts = 0
@@ -1877,8 +1873,9 @@ local Match = {}
 -- codes the server ignored this session (never saved to disk)
 local CodeDead = {}
 
--- redeemed_codes can be a LIST of strings or a MAP { CODE = true }, and it
--- lags after a redeem. Read both shapes plus our saved backup ledger.
+-- redeemed_codes is the game's own ledger under session.profile_data: a LIST
+-- of strings or a MAP { CODE = true }. WaitForRedeemed polls it after each
+-- redeem, so no local file copy is needed.
 local function RedeemedSet()
 	local Set = {}
 	local function Add(Code)
@@ -1895,9 +1892,6 @@ local function RedeemedSet()
 				Add(Code) -- map form: { CODE = true }
 			end
 		end
-	end
-	for Code in pairs(State.RedeemedCodes or {}) do
-		Add(Code)
 	end
 	return Set
 end
@@ -1917,7 +1911,6 @@ function Lobby.RedeemCodes()
 	if not Config.RedeemCodes then
 		return
 	end
-	State.RedeemedCodes = State.RedeemedCodes or {}
 	local Level = Account.Level()
 	local Redeemed = RedeemedSet()
 	local Seen = {}
@@ -1931,15 +1924,13 @@ function Lobby.RedeemCodes()
 				Locked = Locked + 1
 			else
 				-- redeem_code answers nil/""/true for invalid AND already
-				-- redeemed, so only the profile/backup ledger decides
+				-- redeemed, so only the game's redeemed_codes ledger decides
 				local Ok, Reply = Util.Call(10, InvokeServer, "redeem_code", Code)
 				if not Ok then
 					Log("code %s: request failed (%s)", Code, tostring(Reply))
 				elseif Reply == nil or Reply == "" or Reply == true then
 					if WaitForRedeemed(Code, 3) then
 						Redeemed[Code] = true
-						State.RedeemedCodes[Code] = true
-						SaveState()
 						Now += 1
 						Log("code %s redeemed", Code)
 					else
@@ -2544,10 +2535,10 @@ end
 -- ============================================================================
 -- compass / summon / hunt
 -- ============================================================================
-local CompassTried = false
-
--- Compass usage is checked ONLY through the visible summon GUI slot. Owning
--- the unit or a profile marker is NOT enough — the slot is the source of truth.
+-- The pick is spent only while the compass ITEM is in the inventory. That count
+-- lives in profile.inventory.normal_items - the same table the remnant rerolls
+-- read - so the lookup below is identical. The visible summon GUI slot stays
+-- the confirmation that the pick actually landed.
 local function CompassSlot()
 	local Gui = PlayerGui:FindFirstChild("SummonGUI")
 	local Frames = Gui and Gui:FindFirstChild("BannerFrames")
@@ -2577,8 +2568,18 @@ local function CompassDone()
 	return State.Compass == true or State.CompassDone == true
 end
 
--- Force = retry even if a previous attempt this session failed (used right
--- before the first summon, which must never happen before the compass pick).
+-- Same inventory shape TraitResources() uses for star remnants:
+-- profile.inventory.normal_items[itemId] = count.
+local function HasCompassItem()
+	local P = Account.Profile()
+	local Items = type(P.inventory) == "table"
+		and type(P.inventory.normal_items) == "table"
+		and P.inventory.normal_items or {}
+	return (tonumber(Items[Config.CompassId]) or 0) > 0
+end
+
+-- The GUI slot confirms the pick; the inventory item is the trigger to spend
+-- it. Kept for callers that pass Force, but the item check decides now.
 function Lobby.UseCompass(Force)
 	if not Config.CompassUnit then
 		return false
@@ -2592,10 +2593,11 @@ function Lobby.UseCompass(Force)
 		end
 		return true
 	end
-	if CompassTried and not Force then
+	-- item present = pick not spent yet: always use it (every lobby visit,
+	-- no once-per-session throttle). No item = nothing to use.
+	if not HasCompassItem() then
 		return false
 	end
-	CompassTried = true
 
 	local Ep = Util.Endpoint("set_celestial_compass_pick")
 	if not Ep or not Ep:IsA("RemoteFunction") then
