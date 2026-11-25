@@ -3662,6 +3662,22 @@ end
 -- ============================================================================
 -- match: placing / upgrading
 -- ============================================================================
+-- Throttled "why" logging: explains skips once every 5s per reason instead of
+-- flooding the console every tick.
+local LastWhy = {}
+local function Why(Key, Format, ...)
+	local Now = os.clock()
+	if Now - (LastWhy[Key] or 0) >= 5 then
+		LastWhy[Key] = Now
+		Log(Format, ...)
+	end
+end
+
+-- each placed MODEL is its own unit; the uuid identifies the exact copy
+local function ShortId(Uuid)
+	return tostring(Uuid or "?"):sub(1, 8)
+end
+
 function Match.PickNode(UnitId, Farm)
 	local Range = Match.RangeOf(UnitId)
 	local Best, BestScore
@@ -3697,11 +3713,16 @@ function Match.PickNode(UnitId, Farm)
 end
 
 function Match.TryPlace(Entry)
+	local Tag = Entry.UnitId .. " [" .. ShortId(Entry.Uuid) .. "]"
 	if not Match.CanAct() then
-		return false -- one action per ActionDelay, shared with upgrades
+		Why("delay", "place %s: waiting %.1fs action delay", Tag,
+			Config.ActionDelay - (os.clock() - Match.LastAction))
+		return false
 	end
 	local Node = Match.PickNode(Entry.UnitId, Entry.Farm)
 	if not Node then
+		Why("node:" .. Entry.UnitId, "place %s: no valid free node (range %s, farm %s)",
+			Tag, tostring(Match.RangeOf(Entry.UnitId)), tostring(Entry.Farm))
 		return false
 	end
 	local Cf = Util.LookAt(Node.Position, Node.Face)
@@ -3713,17 +3734,26 @@ function Match.TryPlace(Entry)
 	end
 	local Landing = Match.NearestNode(Cf.Position)
 	if Landing and Match.Busy(Landing) then
+		Why("busy:" .. Entry.UnitId, "place %s: landing node busy", Tag)
 		return false
 	end
 	if Match.PointOccupied(Cf.Position) then
+		Why("occupied:" .. Entry.UnitId, "place %s: another unit hitbox covers the spot", Tag)
 		return false
 	end
 
 	local Cost = Match.UnitCost(Entry.UnitId)
-	if not Cost or Match.Money() < Cost then
+	if not Cost then
+		Why("nocost:" .. Entry.UnitId, "place %s: no cost in unit data - skipped", Tag)
+		return false
+	end
+	local MoneyBefore = Match.Money()
+	if MoneyBefore < Cost then
+		Why("money:place:" .. Entry.UnitId, "place %s: need %d, have %d - skipped", Tag, Cost, MoneyBefore)
 		return false
 	end
 	if Match.Blocked(Cf.Position) then
+		Why("blocked", "place %s: bounds/road blocks the node - %ds cooldown", Tag, Config.BlockedCooldown)
 		Match.Claim(Node, Config.BlockedCooldown)
 		return false
 	end
@@ -3732,6 +3762,8 @@ function Match.TryPlace(Entry)
 	local Before = #Match.Models()
 	local Ok, Result = Util.Call(10, InvokeServer, "spawn_unit", Entry.Uuid, Cf)
 	if not (Ok and Result) then
+		Why("reject:place:" .. Entry.UnitId, "place %s: server rejected (ok=%s, result=%s) - %ds cooldown",
+			Tag, tostring(Ok), tostring(Result), Config.RejectCooldown)
 		Match.Claim(Node, Config.RejectCooldown)
 		return false
 	end
@@ -3744,41 +3776,90 @@ function Match.TryPlace(Entry)
 	if Landing then
 		Match.Claim(Landing, Config.ClaimSeconds)
 	end
-	Log("placed %s", Entry.UnitId)
+	Log("placed %s cost %d | money %d -> %d | model %d -> %d",
+		Tag, Cost, MoneyBefore, Match.Money(), Before, #Match.Models())
 	return true
 end
 
 function Match.PlaceTick()
 	local Counts, Combat, Farms = Match.Counts()
 	local FarmsAllowed = Combat >= Config.MinCombatFirst and Farms < Config.FarmQuota
+	Why("farmgate", "farm gate: %d combat (need %d), %d/%d farms -> %s",
+		Combat, Config.MinCombatFirst, Farms, Config.FarmQuota, FarmsAllowed and "open" or "closed")
 	for _, Entry in ipairs(Match.Priority) do
+		local Tag = Entry.UnitId .. " [" .. ShortId(Entry.Uuid) .. "]"
 		local Cap = Match.SpawnCap(Entry.UnitId, Entry.Uuid)
 		local Placed = Counts[Entry.UnitId] or 0
-		if Cap and Placed < Cap and (not Entry.Farm or FarmsAllowed) then
-			if Match.TryPlace(Entry) then
-				return true
-			end
+		if not Cap then
+			Why("nocap:" .. Entry.UnitId, "place %s: no spawn cap in data - skipped", Tag)
+		elseif Placed >= Cap then
+			Why("cap:" .. Entry.UnitId, "place %s: at cap %d/%d - skipped", Tag, Placed, Cap)
+		elseif Entry.Farm and not FarmsAllowed then
+			Why("farmquota:" .. Entry.UnitId, "place %s: farm quota closed - skipped", Tag)
+		elseif Match.TryPlace(Entry) then
+			return true
 		end
 	end
 	return false
 end
 
+-- Order so the LOWEST level copy goes first, but interleave unit ids: three
+-- copies of luffy must not be upgraded back-to-back before naruto gets a turn.
+local function OrderUpgradeCandidates(Candidates)
+	local Pending = {}
+	for Index, Candidate in ipairs(Candidates) do
+		Pending[Index] = Candidate
+	end
+	local Picks = {}
+	local Ordered = {}
+	while #Pending > 0 do
+		local BestIndex
+		for Index, Candidate in ipairs(Pending) do
+			local Best = BestIndex and Pending[BestIndex]
+			local Picked = Picks[Candidate.UnitId] or 0
+			local BestPicked = Best and (Picks[Best.UnitId] or 0) or 0
+			if not Best
+				or Candidate.Level < Best.Level
+				or (Candidate.Level == Best.Level and Picked < BestPicked)
+				or (Candidate.Level == Best.Level and Picked == BestPicked and Candidate.Rank < Best.Rank) then
+				BestIndex = Index
+			end
+		end
+		local Chosen = table.remove(Pending, BestIndex)
+		Picks[Chosen.UnitId] = (Picks[Chosen.UnitId] or 0) + 1
+		Ordered[#Ordered + 1] = Chosen
+	end
+	return Ordered
+end
+
 function Match.UpgradeTick()
+	-- one candidate per placed MODEL: every copy is its own unit
 	local Candidates = {}
 	local Owned = Account.Collection().owned_units or {}
 	for _, Model in ipairs(Match.Models()) do
 		local Uuid = StatValue(Model, "uuid")
+		local Tag = tostring(Uuid or Model):sub(1, 8)
 		if Uuid and type(Owned[tostring(Uuid)]) ~= "table" then
+			Why("foreign", "upgrade [%s]: not in our collection - skipped", Tag)
 			continue -- never spend on a model we do not own
 		end
 		local UnitId = Match.UnitIdOf(Model)
 		local Level = tonumber(StatValue(Model, "upgrade"))
 		local Max = tonumber(StatValue(Model, "max_upgrade"))
-		if UnitId and Level and (not Max or Level < Max) then
+		if not UnitId then
+			Why("noid:" .. Tag, "upgrade [%s]: no resolvable unit id - skipped", Tag)
+		elseif not Level then
+			Why("nolevel:" .. Tag, "upgrade [%s]: no upgrade stat yet - skipped", Tag)
+		elseif Max and Level >= Max then
+			Why("max:" .. UnitId, "upgrade %s [%s]: already lvl %d/%d - skipped", UnitId, Tag, Level, Max)
+		else
 			local Cost = NextUpgradeCost(UnitId, Level)
-			if Cost then
+			if not Cost then
+				Why("nocost:" .. UnitId, "upgrade %s [%s]: no cost for lvl %d - skipped", UnitId, Tag, Level + 1)
+			else
 				Candidates[#Candidates + 1] = {
 					Model = Model,
+					Uuid = tostring(Uuid or "?"),
 					UnitId = UnitId,
 					Level = Level,
 					Cost = Cost,
@@ -3787,30 +3868,57 @@ function Match.UpgradeTick()
 			end
 		end
 	end
-	table.sort(Candidates, function(A, B)
-		if A.Rank ~= B.Rank then
-			return A.Rank < B.Rank
-		end
-		return A.Level < B.Level
-	end)
 
+	Why("upscan", "upgrade scan: %d placed copies, %d eligible (owned only)",
+		#Match.Models(), #Candidates)
 	local Done = 0
-	for _, Entry in ipairs(Candidates) do
+	for _, Entry in ipairs(OrderUpgradeCandidates(Candidates)) do
 		if Done >= Config.UpgradesPerTick then
+			Why("perTick", "upgrade: %d done this tick (limit %d) - stopping", Done, Config.UpgradesPerTick)
 			break
 		end
 		if not Match.CanAct() then
-			break -- respect ActionDelay across placements AND upgrades
+			Why("delay", "upgrade %s [%s]: waiting %.1fs action delay", Entry.UnitId, ShortId(Entry.Uuid),
+				Config.ActionDelay - (os.clock() - Match.LastAction))
+			break
 		end
-		if Entry.Model.Parent and Match.Money() >= Entry.Cost then
-			Reserve(Entry.Cost)
-			local Ok, Result = pcall(function()
-				return InvokeServer("upgrade_unit_ingame", Entry.Model)
-			end)
-			if Ok and Result ~= false then
-				Done += 1
-				Log("upgraded %s -> %d", Entry.UnitId, Entry.Level + 1)
-			end
+		if not Entry.Model.Parent then
+			continue -- the copy was sold / died since the list was built
+		end
+		-- re-read THIS copy's live level and cost: a copy upgraded a moment ago
+		-- must not be charged/credited with the old candidate's level
+		local LiveLevel = tonumber(StatValue(Entry.Model, "upgrade"))
+		if not LiveLevel then
+			continue
+		end
+		local LiveMax = tonumber(StatValue(Entry.Model, "max_upgrade"))
+		if LiveMax and LiveLevel >= LiveMax then
+			Why("max:" .. Entry.UnitId, "upgrade %s [%s]: now lvl %d/%d - skipped",
+				Entry.UnitId, ShortId(Entry.Uuid), LiveLevel, LiveMax)
+			continue
+		end
+		local LiveCost = NextUpgradeCost(Entry.UnitId, LiveLevel)
+		if not LiveCost then
+			continue
+		end
+		local Money = Match.Money()
+		local Tag = Entry.UnitId .. " [" .. ShortId(Entry.Uuid) .. "]"
+		if Money < LiveCost then
+			Why("money:up:" .. Entry.UnitId, "upgrade %s lvl %d: need %d, have %d - trying next copy",
+				Tag, LiveLevel, LiveCost, Money)
+			continue -- let another unique copy be upgraded instead
+		end
+		Reserve(LiveCost)
+		local Ok, Result = pcall(function()
+			return InvokeServer("upgrade_unit_ingame", Entry.Model)
+		end)
+		if Ok and Result ~= false then
+			Done += 1
+			Log("upgraded %s %d -> %d | cost %d | money %d -> %d",
+				Tag, LiveLevel, LiveLevel + 1, LiveCost, Money, Match.Money())
+		else
+			Why("reject:up:" .. Entry.UnitId, "upgrade %s: server rejected (ok=%s, result=%s)",
+				Tag, tostring(Ok), tostring(Result))
 		end
 	end
 	return Done
@@ -3831,6 +3939,7 @@ function Match.Reset(Reason)
 	Match.Fails = 0
 	Match.Pending = {}
 	Match.LastAction = 0
+	LastWhy = {}
 	Log("new map (%s)", tostring(Reason))
 end
 
@@ -3846,6 +3955,7 @@ function Match.Tick()
 
 	Match.Scan()
 	if #Match.Nodes == 0 then
+		Why("scan", "tick: no placement nodes yet (scan tries %d) - waiting", Match.Tries)
 		return
 	end
 	Match.RefreshOccupied()
@@ -3926,6 +4036,7 @@ end
 function Match.Decide()
 	local Current = State.Current or { Kind = "story" }
 	if Current.Kind == "challenge" then
+		Log("challenge match finished - leaving")
 		return "leave"
 	end
 	if Current.Kind == "act6" then
@@ -3946,6 +4057,7 @@ function Match.Decide()
 		Log("challenge reset - leaving")
 		return "leave"
 	end
+	Why("decide:replay", "match kind %s: nothing due - replaying loop", tostring(Current.Kind))
 	return "replay"
 end
 
