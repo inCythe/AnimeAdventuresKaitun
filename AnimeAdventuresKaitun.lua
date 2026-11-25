@@ -3300,10 +3300,6 @@ end
 function Match.DiscoverCaps()
 	local GuiService = game:GetService("GuiService")
 	local VIM = game:GetService("VirtualInputManager")
-	local Previous = nil
-	pcall(function()
-		Previous = GuiService.SelectedObject
-	end)
 	local function IsSelected(UnitId)
 		local Now = Match.Grid and Match.Grid.unit_id or nil
 		if not Now then
@@ -3359,9 +3355,11 @@ function Match.DiscoverCaps()
 			end
 		end
 	end
+	-- leave nothing selected once cap reading is finished
 	pcall(function()
-		GuiService.SelectedObject = Previous
+		GuiService.SelectedObject = nil
 	end)
+	LogT("Caps", "selection cleared")
 	LogT("Caps", "resolved %d/%d%s", Resolved, Util.Count(Match.Slots),
 		#Failed > 0 and (" | failed: " .. table.concat(Failed, ", ")) or "")
 end
