@@ -3673,9 +3673,30 @@ local function Why(Key, Format, ...)
 	end
 end
 
--- each placed MODEL is its own unit; the uuid identifies the exact copy
+-- Copies of the same equipped unit SHARE a uuid, but the game's
+-- upgrade_unit_ingame remote takes the exact MODEL instance. The fixed _hitbox
+-- position is unique per placed copy, so it is the reliable copy identity.
 local function ShortId(Uuid)
 	return tostring(Uuid or "?"):sub(1, 8)
+end
+
+local function CopyPos(Model)
+	local Hitbox = Model:FindFirstChild("_hitbox", true)
+	if Hitbox and Hitbox:IsA("BasePart") then
+		return Hitbox.Position
+	end
+	local Ok, Cf = pcall(function()
+		return Model:GetPivot()
+	end)
+	return Ok and Cf and Cf.Position or nil
+end
+
+local function CopyKey(Model)
+	local Position = CopyPos(Model)
+	if Position then
+		return string.format("%.1f,%.1f", Position.X, Position.Z)
+	end
+	return tostring(Model):sub(-8)
 end
 
 function Match.PickNode(UnitId, Farm)
@@ -3821,7 +3842,9 @@ local function OrderUpgradeCandidates(Candidates)
 			if not Best
 				or Candidate.Level < Best.Level
 				or (Candidate.Level == Best.Level and Picked < BestPicked)
-				or (Candidate.Level == Best.Level and Picked == BestPicked and Candidate.Rank < Best.Rank) then
+				or (Candidate.Level == Best.Level and Picked == BestPicked and Candidate.Rank < Best.Rank)
+				or (Candidate.Level == Best.Level and Picked == BestPicked
+					and Candidate.Rank == Best.Rank and Candidate.Key < Best.Key) then
 				BestIndex = Index
 			end
 		end
@@ -3838,29 +3861,33 @@ function Match.UpgradeTick()
 	local Owned = Account.Collection().owned_units or {}
 	for _, Model in ipairs(Match.Models()) do
 		local Uuid = StatValue(Model, "uuid")
-		local Tag = tostring(Uuid or Model):sub(1, 8)
+		local UnitId = Match.UnitIdOf(Model)
+		local Key = CopyKey(Model)
+		local Position = CopyPos(Model)
+		local Tag = tostring(UnitId or "?") .. "@" .. Key
 		if Uuid and type(Owned[tostring(Uuid)]) ~= "table" then
 			Why("foreign", "upgrade [%s]: not in our collection - skipped", Tag)
 			continue -- never spend on a model we do not own
 		end
-		local UnitId = Match.UnitIdOf(Model)
 		local Level = tonumber(StatValue(Model, "upgrade"))
 		local Max = tonumber(StatValue(Model, "max_upgrade"))
 		if not UnitId then
-			Why("noid:" .. Tag, "upgrade [%s]: no resolvable unit id - skipped", Tag)
+			Why("noid:" .. Key, "upgrade [%s]: no resolvable unit id - skipped", Tag)
 		elseif not Level then
-			Why("nolevel:" .. Tag, "upgrade [%s]: no upgrade stat yet - skipped", Tag)
+			Why("nolevel:" .. Key, "upgrade [%s]: no upgrade stat yet - skipped", Tag)
 		elseif Max and Level >= Max then
-			Why("max:" .. UnitId, "upgrade %s [%s]: already lvl %d/%d - skipped", UnitId, Tag, Level, Max)
+			Why("max:" .. UnitId, "upgrade %s: already lvl %d/%d - skipped", Tag, Level, Max)
 		else
 			local Cost = NextUpgradeCost(UnitId, Level)
 			if not Cost then
-				Why("nocost:" .. UnitId, "upgrade %s [%s]: no cost for lvl %d - skipped", UnitId, Tag, Level + 1)
+				Why("nocost:" .. UnitId, "upgrade %s: no cost for lvl %d - skipped", Tag, Level + 1)
 			else
 				Candidates[#Candidates + 1] = {
 					Model = Model,
 					Uuid = tostring(Uuid or "?"),
 					UnitId = UnitId,
+					Key = Key,
+					Pos = Position,
 					Level = Level,
 					Cost = Cost,
 					Rank = Match.Rank[UnitId] or 99,
@@ -3878,7 +3905,8 @@ function Match.UpgradeTick()
 			break
 		end
 		if not Match.CanAct() then
-			Why("delay", "upgrade %s [%s]: waiting %.1fs action delay", Entry.UnitId, ShortId(Entry.Uuid),
+			Why("delay", "upgrade %s: waiting %.1fs action delay",
+				Entry.UnitId .. "@" .. Entry.Key,
 				Config.ActionDelay - (os.clock() - Match.LastAction))
 			break
 		end
@@ -3893,8 +3921,8 @@ function Match.UpgradeTick()
 		end
 		local LiveMax = tonumber(StatValue(Entry.Model, "max_upgrade"))
 		if LiveMax and LiveLevel >= LiveMax then
-			Why("max:" .. Entry.UnitId, "upgrade %s [%s]: now lvl %d/%d - skipped",
-				Entry.UnitId, ShortId(Entry.Uuid), LiveLevel, LiveMax)
+			Why("max:" .. Entry.UnitId, "upgrade %s: now lvl %d/%d - skipped",
+				Entry.UnitId .. "@" .. Entry.Key, LiveLevel, LiveMax)
 			continue
 		end
 		local LiveCost = NextUpgradeCost(Entry.UnitId, LiveLevel)
@@ -3902,7 +3930,7 @@ function Match.UpgradeTick()
 			continue
 		end
 		local Money = Match.Money()
-		local Tag = Entry.UnitId .. " [" .. ShortId(Entry.Uuid) .. "]"
+		local Tag = Entry.UnitId .. "@" .. Entry.Key
 		if Money < LiveCost then
 			Why("money:up:" .. Entry.UnitId, "upgrade %s lvl %d: need %d, have %d - trying next copy",
 				Tag, LiveLevel, LiveCost, Money)
@@ -3914,11 +3942,11 @@ function Match.UpgradeTick()
 		end)
 		if Ok and Result ~= false then
 			Done += 1
-			Log("upgraded %s %d -> %d | cost %d | money %d -> %d",
-				Tag, LiveLevel, LiveLevel + 1, LiveCost, Money, Match.Money())
+			Log("upgraded %s %d -> %d | cost %d | money %d -> %d | model %s",
+				Tag, LiveLevel, LiveLevel + 1, LiveCost, Money, Match.Money(), Entry.Model.Name)
 		else
-			Why("reject:up:" .. Entry.UnitId, "upgrade %s: server rejected (ok=%s, result=%s)",
-				Tag, tostring(Ok), tostring(Result))
+			Why("reject:up:" .. Entry.UnitId, "upgrade %s [%s]: server rejected (ok=%s, result=%s)",
+				Tag, Entry.Model.Name, tostring(Ok), tostring(Result))
 		end
 	end
 	return Done
