@@ -3284,12 +3284,12 @@ function Match.DiscoverCaps()
 				if Max then
 					Match.Caps[Uuid] = Max
 					Resolved += 1
-					Log("spawn cap %s [%s] = %d", tostring(UnitId), ShortId(Uuid), Max)
+					Log("spawn cap %s [%s] = %d", tostring(UnitId), tostring(Uuid):sub(1, 8), Max)
 				else
-					Failed[#Failed + 1] = tostring(UnitId) .. " [" .. ShortId(Uuid) .. "] no text"
+					Failed[#Failed + 1] = tostring(UnitId) .. " [" .. tostring(Uuid):sub(1, 8) .. "] no text"
 				end
 			else
-				Failed[#Failed + 1] = tostring(UnitId) .. " [" .. ShortId(Uuid)
+				Failed[#Failed + 1] = tostring(UnitId) .. " [" .. tostring(Uuid):sub(1, 8)
 					.. "] unit_id=" .. tostring(Match.Grid and Match.Grid.unit_id)
 			end
 		end
