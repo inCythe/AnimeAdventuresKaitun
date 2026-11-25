@@ -147,6 +147,7 @@ local WorldLevelOrder = SafeLoad("load_data", "WorldLevelOrder") or {}
 local Banners = SafeLoad("load_data", "Banners") or {}
 local GameplaySettings = SafeLoad("load_data", "GameplaySettings") or {}
 local PlayerLevelRewards = SafeLoad("load_data", "PlayerLevelRewards") or {}
+local Traits = SafeLoad("load_data", "Traits") or {}
 
 -- ============================================================================
 -- config
@@ -2851,6 +2852,39 @@ local function RelicBuffs(Unit)
 	return Mul, Crit
 end
 
+-- Traits.effects is the game's own table (verified live):
+--   unique = { stats = { damage = 3, cooldown = -0.1, range = 0.1 } }  (3x dmg!)
+--   superior = { tiers = { [1] = { damage = 0.1 }, ... } }
+--   nimble = { tiers = { [1] = { cooldown = -0.05 }, ... } }, etc.
+local function TraitEffects(Unit)
+	local EffectDefs = type(Traits.effects) == "table" and Traits.effects or {}
+	local Damage, Cooldown, Range = 1, 1, 1
+	local List = type(Unit.traits) == "table" and Unit.traits or {}
+	for _, Entry in pairs(List) do
+		if type(Entry) == "table" then
+			local Id = Entry.trait
+			local Effect = type(Id) == "string" and EffectDefs[Id] or nil
+			if type(Effect) == "table" then
+				local Stats = type(Effect.stats) == "table" and Effect.stats or {}
+				local Tier = math.floor(tonumber(Entry.tier) or 1)
+				local TierStats = type(Effect.tiers) == "table" and Effect.tiers[Tier] or nil
+				local function Value(Key)
+					local V = tonumber(Stats[Key]) or 0
+					if type(TierStats) == "table" then
+						V += tonumber(TierStats[Key]) or 0
+					end
+					return V
+				end
+				-- damage is additive (Unique = 3 => 4x total), cooldown is negative
+				Damage *= 1 + Value("damage")
+				Cooldown *= 1 / (1 - math.clamp(Value("cooldown"), -0.95, 0))
+				Range *= 1 + Value("range")
+			end
+		end
+	end
+	return Damage, Cooldown, Range
+end
+
 local function TraitMultipliers(Unit)
 	local Stats = type(Unit.trait_stats) == "table" and Unit.trait_stats or {}
 	local Potency = tonumber(Stats.potency_stat) or 1
@@ -2872,6 +2906,11 @@ local function TraitMultipliers(Unit)
 	local RelicMul, RelicCrit = RelicBuffs(Unit)
 	-- crit is a 2x hit, so expected value is 1 + crit chance
 	Potency *= RelicMul * (1 + math.clamp(RelicCrit, 0, 1))
+	-- rolled traits from the game's own effect table (Unique = 3x damage)
+	local TraitDamage, TraitCooldown, TraitRange = TraitEffects(Unit)
+	Potency *= TraitDamage
+	Speed *= TraitCooldown
+	Range *= TraitRange
 	return Potency, Speed, Range
 end
 
