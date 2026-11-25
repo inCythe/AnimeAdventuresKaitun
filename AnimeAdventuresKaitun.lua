@@ -72,6 +72,12 @@ local function Log(Format, ...)
 	print(("[AA Kaitun] " .. Format):format(...))
 end
 
+-- Organised logging: every line carries a short category tag so a busy console
+-- is readable at a glance.
+local function LogT(Tag, Format, ...)
+	print(("[AA Kaitun][%s] " .. Format):format(Tag, ...))
+end
+
 -- game modules ---------------------------------------------------------------
 local Loader = require(ReplicatedStorage:WaitForChild("src"):WaitForChild("Loader"))
 
@@ -682,7 +688,7 @@ function UI.Lobby()
 		end
 	end)
 	Refresh()
-	Log("lobby widget on")
+	LogT("UI", "lobby widget on")
 end
 
 
@@ -1175,7 +1181,7 @@ function UI.Overlay()
 		end
 	end)
 	pcall(Refresh)
-	Log("stats overlay on (black screen %s)", BlackOn and "on" or "off")
+	LogT("UI", "stats overlay on (black screen %s)", BlackOn and "on" or "off")
 end
 
 
@@ -1513,7 +1519,7 @@ function Lobby.RedeemCodes()
 		end
 	end
 	if Now > 0 then
-		Log("codes: %d redeemed", Now)
+		LogT("Codes", "%d redeemed", Now)
 	end
 end
 
@@ -2057,7 +2063,7 @@ function Lobby.AutoSell()
 	end
 
 	local Before = Util.Count(Owned)
-	Log("auto sell: selling %d unit(s)", #Sell)
+	LogT("Sell", "selling %d unit(s)", #Sell)
 	for Index = 1, #Sell, 50 do
 		local Batch = {}
 		for J = Index, math.min(Index + 49, #Sell) do
@@ -2067,7 +2073,7 @@ function Lobby.AutoSell()
 		task.wait(0.3)
 	end
 	local After = Util.Count(Account.Collection().owned_units or {})
-	Log("auto sell: %d -> %d unit(s)", Before, After)
+	LogT("Sell", "%d -> %d units", Before, After)
 end
 
 -- ============================================================================
@@ -2358,7 +2364,7 @@ function Lobby.EquipTeam()
 
 	local Left = Util.Count(EquippedSet())
 	if Left == #Want then
-		Log("team equipped (%d)", Left)
+		LogT("Team", "equipped %d", Left)
 	else
 		Log("team: %d/%d equipped", Left, #Want)
 	end
@@ -2848,12 +2854,12 @@ function Lobby.WaitReady()
 	end
 	-- let the game finish spawning lobby parts and GUIs
 	task.wait(5)
-	Log("lobby ready")
+	LogT("Lobby", "ready")
 	return true
 end
 
 function Lobby.Run()
-	Log("lobby mode")
+	LogT("Lobby", "mode")
 	if not Lobby.WaitReady() then
 		warn("[AA Kaitun] lobby did not finish loading")
 		return
@@ -3288,7 +3294,7 @@ function Match.DiscoverCaps()
 				if Max then
 					Match.Caps[Uuid] = Max
 					Resolved += 1
-					Log("spawn cap %s [%s] = %d", tostring(UnitId), tostring(Uuid):sub(1, 8), Max)
+					LogT("Caps", "%s [%s] = %d", tostring(UnitId), tostring(Uuid):sub(1, 8), Max)
 				else
 					Failed[#Failed + 1] = tostring(UnitId) .. " [" .. tostring(Uuid):sub(1, 8) .. "] no text"
 				end
@@ -3301,7 +3307,7 @@ function Match.DiscoverCaps()
 	pcall(function()
 		GuiService.SelectedObject = Previous
 	end)
-	Log("spawn caps resolved: %d/%d%s", Resolved, Util.Count(Match.Slots),
+	LogT("Caps", "resolved %d/%d%s", Resolved, Util.Count(Match.Slots),
 		#Failed > 0 and (" | failed: " .. table.concat(Failed, ", ")) or "")
 end
 
@@ -3630,7 +3636,7 @@ function Match.Rescan()
 	Match.Nodes = Nodes
 	Match.Claims = {}
 	Match.Need = #Nodes == 0
-	Log("scan: %d node(s)", #Nodes)
+	LogT("Scan", "%d nodes", #Nodes)
 	return #Nodes
 end
 
@@ -3748,7 +3754,7 @@ local function Why(Key, Format, ...)
 	local Now = os.clock()
 	if Now - (LastWhy[Key] or 0) >= 5 then
 		LastWhy[Key] = Now
-		Log(Format, ...)
+		LogT("Note", Format, ...)
 	end
 end
 
@@ -3876,7 +3882,7 @@ function Match.TryPlace(Entry)
 	if Landing then
 		Match.Claim(Landing, Config.ClaimSeconds)
 	end
-	Log("placed %s @%.1f,%.1f | node %.1f,%.1f | path %.1f | cost %d | money %d -> %d | cap %s | models %d -> %d",
+	LogT("Place", "%s @%.1f,%.1f | node %.1f,%.1f | path %.1f | cost %d | money %d -> %d | cap %s | models %d -> %d",
 		Tag, Cf.Position.X, Cf.Position.Z, Node.Position.X, Node.Position.Z,
 		Match.PathDistanceXZ(Cf.Position), Cost, MoneyBefore, Match.Money(),
 		tostring(Match.SpawnCap(Entry.UnitId, Entry.Uuid)), Before, #Match.Models())
@@ -3988,7 +3994,7 @@ function Match.UpgradeTick()
 		return InvokeServer("upgrade_unit_ingame", Chosen.Model)
 	end)
 	if Ok and Result ~= false then
-		Log("upgraded %s %d -> %d | cost %d | money %d -> %d | model %s",
+		LogT("Upgrade", "%s %d -> %d | cost %d | money %d -> %d | model %s",
 			Tag, ChosenLevel, ChosenLevel + 1, ChosenCost, Money, Match.Money(), Chosen.Model.Name)
 		return 1
 	end
@@ -4013,7 +4019,7 @@ function Match.Reset(Reason)
 	Match.Pending = {}
 	Match.LastAction = 0
 	LastWhy = {}
-	Log("new map (%s)", tostring(Reason))
+	LogT("Scan", "new map (%s) - state reset", tostring(Reason))
 end
 
 function Match.Tick()
@@ -4089,7 +4095,7 @@ function Match.Votes()
 		if Gui and Gui:IsA("ScreenGui") and Gui.Enabled and Voting then
 			if not Match.VoteStartFired then
 				Match.VoteStartFired = true
-				Log("voting start")
+				LogT("Vote", "start")
 				Util.Invoke("vote_start")
 			end
 		else
@@ -4113,25 +4119,25 @@ end
 function Match.Decide()
 	local Current = State.Current or { Kind = "story" }
 	if Current.Kind == "challenge" then
-		Log("challenge match finished - leaving")
+		LogT("End", "challenge finished -> leave")
 		return "leave"
 	end
 	if Current.Kind == "act6" then
-		Log("act 6 cleared - leaving for Infinite")
+		LogT("End", "act 6 cleared -> leave")
 		return "leave"
 	end
 	if Lobby.NeedHunt() then
-		Log("hunt due - leaving")
+		LogT("End", "hunt due -> leave")
 		return "leave"
 	end
 	if Current.Kind == "story" and Account.Level() >= Config.TargetLevel then
-		Log("target level reached - leaving")
+		LogT("End", "target level reached -> leave")
 		return "leave"
 	end
 	-- a challenge reset (:00 / :30) happened while this match was running
 	if ChallengesEnabled() and Account.Level() >= Config.NormalChallengeLevel
 		and Lobby.Slot() > (State.ChallengeSlot or 0) then
-		Log("challenge reset - leaving")
+		LogT("End", "challenge reset -> leave")
 		return "leave"
 	end
 	Why("decide:replay", "match kind %s: nothing due - replaying loop", tostring(Current.Kind))
@@ -4150,7 +4156,7 @@ function Match.Finish()
 	end
 	task.wait(2)
 	local Decision = Match.Decide()
-	Log("match over - %s", Decision)
+	LogT("End", "decision=%s", Decision)
 	if Decision == "replay" then
 		Util.Fire("set_game_finished_vote", "replay")
 	else
@@ -4168,7 +4174,7 @@ function Match.Finish()
 end
 
 function Match.Run()
-	Log("match mode")
+	LogT("Match", "entered match mode")
 	if Config.FpsBoost then
 		Fps.Apply() -- optimizer runs in matches only, never in the lobby
 	end
@@ -4211,7 +4217,7 @@ function Match.Run()
 				if Wave and Wave >= Config.LoseWave then
 					LoseVoted = true
 					Util.Fire("vote_lose_game", true)
-					Log("voted lose at wave %d", Wave)
+					LogT("Vote", "lose at wave %d", Wave)
 				end
 			end
 			local Ok, Err = pcall(Match.Tick)
