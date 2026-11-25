@@ -3242,41 +3242,63 @@ function Match.DiscoverCaps()
 	pcall(function()
 		Previous = GuiService.SelectedObject
 	end)
-	local Resolved = 0
+	local Resolved, Failed = 0, {}
 	for Uuid, Slot in pairs(Match.Slots) do
 		if Match.Caps[Uuid] == nil then
 			local UnitId = UnitIdForUuid(Uuid)
-			pcall(function()
-				if Match.Grid and Match.Grid._on_select_single_unit then
-					Match.Grid._on_select_single_unit(UnitId)
+			local Selected = false
+			-- try one method at a time: combining them can toggle the slot off
+			local Methods = {
+				function()
+					if Match.Grid and Match.Grid._on_select_single_unit then
+						Match.Grid._on_select_single_unit(UnitId)
+					end
+				end,
+				function()
+					Slot.Activated:Fire()
+				end,
+				function()
+					GuiService.SelectedObject = Slot
+				end,
+			}
+			for Index, Method in ipairs(Methods) do
+				pcall(Method)
+				task.wait(0.18)
+				local Now = Match.Grid and Match.Grid.unit_id or nil
+				if Now == UnitId then
+					Selected = true
+					break
 				end
-			end)
-			pcall(function()
-				Slot.Activated:Fire()
-			end)
-			pcall(function()
-				GuiService.SelectedObject = Slot
-			end)
-			task.wait(0.12)
-			pcall(function()
-				local Selected = Match.Grid and Match.Grid.unit_id or nil
-				if UnitId and Selected == UnitId then
-					local Text = Slot:FindFirstChild("placement_text")
-					if Text and Text:IsA("TextLabel") then
-						local Max = tonumber(tostring(Text.Text):match("/%s*(%d+)"))
-						if Max then
-							Match.Caps[Uuid] = Max
-							Resolved += 1
+			end
+			if Selected then
+				local Max
+				for _, Child in ipairs(Slot:GetDescendants()) do
+					if Child:IsA("TextLabel") then
+						local Value = tonumber(tostring(Child.Text):match("%d+%s*/%s*(%d+)"))
+						if Value then
+							Max = Value
+							break
 						end
 					end
 				end
-			end)
+				if Max then
+					Match.Caps[Uuid] = Max
+					Resolved += 1
+					Log("spawn cap %s [%s] = %d", tostring(UnitId), ShortId(Uuid), Max)
+				else
+					Failed[#Failed + 1] = tostring(UnitId) .. " [" .. ShortId(Uuid) .. "] no text"
+				end
+			else
+				Failed[#Failed + 1] = tostring(UnitId) .. " [" .. ShortId(Uuid)
+					.. "] unit_id=" .. tostring(Match.Grid and Match.Grid.unit_id)
+			end
 		end
 	end
 	pcall(function()
 		GuiService.SelectedObject = Previous
 	end)
-	Log("spawn caps resolved: %d/%d", Resolved, Util.Count(Match.Slots))
+	Log("spawn caps resolved: %d/%d%s", Resolved, Util.Count(Match.Slots),
+		#Failed > 0 and (" | failed: " .. table.concat(Failed, ", ")) or "")
 end
 
 -- spawn_cap, except the `unique` trait icon forces exactly one copy
@@ -3850,8 +3872,10 @@ function Match.TryPlace(Entry)
 	if Landing then
 		Match.Claim(Landing, Config.ClaimSeconds)
 	end
-	Log("placed %s cost %d | money %d -> %d | model %d -> %d",
-		Tag, Cost, MoneyBefore, Match.Money(), Before, #Match.Models())
+	Log("placed %s @%.1f,%.1f | node %.1f,%.1f | path %.1f | cost %d | money %d -> %d | cap %s | models %d -> %d",
+		Tag, Cf.Position.X, Cf.Position.Z, Node.Position.X, Node.Position.Z,
+		Match.PathDistanceXZ(Cf.Position), Cost, MoneyBefore, Match.Money(),
+		tostring(Match.SpawnCap(Entry.UnitId, Entry.Uuid)), Before, #Match.Models())
 	return true
 end
 
@@ -3926,6 +3950,7 @@ function Match.UpgradeTick()
 				Uuid = tostring(Uuid or "?"),
 				UnitId = UnitId,
 				Key = CopyKey(Model),
+				Pos = CopyPos(Model),
 				Level = Level,
 				Rank = Match.Rank[UnitId] or 99,
 			}
@@ -3950,11 +3975,14 @@ function Match.UpgradeTick()
 		return 0
 	end
 
+	local Tag = Chosen.UnitId .. "@" .. Chosen.Key
+	Why("upchoose", "upgrade target %s | lvl %d -> %d | cost %d | money %d | pos @%s",
+		Tag, ChosenLevel, ChosenLevel + 1, ChosenCost, Money,
+		Chosen.Pos and string.format("%.1f,%.1f", Chosen.Pos.X, Chosen.Pos.Z) or "?")
 	Reserve(ChosenCost)
 	local Ok, Result = pcall(function()
 		return InvokeServer("upgrade_unit_ingame", Chosen.Model)
 	end)
-	local Tag = Chosen.UnitId .. "@" .. Chosen.Key
 	if Ok and Result ~= false then
 		Log("upgraded %s %d -> %d | cost %d | money %d -> %d | model %s",
 			Tag, ChosenLevel, ChosenLevel + 1, ChosenCost, Money, Match.Money(), Chosen.Model.Name)
@@ -4002,6 +4030,10 @@ function Match.Tick()
 	Match.RefreshOccupied()
 	Match.BuildPriority()
 	Match.RefreshSlots()
+	local Counts, Combat, Farms = Match.Counts()
+	Why("tick", "tick: map %s | nodes %d | placed %d (%d combat / %d farm) | priority %d | money %d | caps %d",
+		MapId, #Match.Nodes, #Match.Models(), Combat, Farms, #Match.Priority,
+		Match.Money() or 0, Util.Count(Match.Caps))
 
 	if Match.PlaceTick() then
 		return
