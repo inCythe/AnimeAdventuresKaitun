@@ -18,7 +18,8 @@
 --        daily challenge  (level 25+)
 --        normal challenge (level 15+)
 --        level <  TargetLevel -> story act 1 solo, vote lose at wave 6, replay
---        level >= TargetLevel -> Infinite,        vote lose at wave 6, replay
+--        level >= TargetLevel -> world skip to act 6, full clear, leave, then
+--                                Infinite vote-lose loop
 --
 -- MATCH
 --   vote start only while the real vote popup is open (votes start once),
@@ -123,8 +124,11 @@ local PlayerLevelRewards = SafeLoad("load_data", "PlayerLevelRewards") or {}
 -- ============================================================================
 local Config = {
 	-- progression ------------------------------------------------------------
-	TargetLevel = 50,             -- below this: story loop, at/above: Infinite
+	TargetLevel = 50,             -- below this: story loop, at/above: act 6 clear then Infinite
 	StoryAct = 1,                 -- act of the first story world used for the loop
+	SkipStory = true,             -- at TargetLevel, skip acts 1-5 and clear act 6 first
+	SkipWorld = nil,              -- world to skip; nil = first story world
+	SkipAct = nil,                -- act to clear; nil = last act (act 6)
 	LoseWave = 6,                 -- vote lose at this wave in loop modes (0 = off)
 	NormalChallengeLevel = 15,
 	DailyChallengeLevel = 25,
@@ -726,6 +730,7 @@ function UI.Overlay()
 
 	local ActivityNames = {
 		story = "Story loop",
+		act6 = "Act 6 clear",
 		infinite = "Infinite",
 		challenge = "Challenge",
 	}
@@ -2504,7 +2509,7 @@ function Lobby.InfiniteStage()
 	return nil
 end
 
-local function JoinSolo(LevelId, Difficulty)
+local function JoinSolo(LevelId, Difficulty, SkipWorld)
 	for Attempt = 1, 3 do
 		local Model = EnsureLobby(LevelId)
 		if not Model then
@@ -2521,6 +2526,16 @@ local function JoinSolo(LevelId, Difficulty)
 			LobbyServiceClient.map_item_id = nil
 		end
 		task.wait(0.5)
+		-- story skipper: jump straight to the last act (acts 1-5 skipped)
+		if SkipWorld then
+			local _, Sent = Util.Invoke("lobby_world_skip", SkipWorld)
+			if not Sent then
+				Log("world skip refused for %s", tostring(SkipWorld))
+				return false
+			end
+			Log("world skip -> %s (acts 1-5 skipped)", tostring(SkipWorld))
+			task.wait(0.5)
+		end
 		Log("locking %s in %s (%s, try %d)", LevelId, LobbyId, Difficulty, Attempt)
 		if Util.Invoke("request_lock_level", LobbyId, LevelId, false, Difficulty) then
 			if LobbyServiceClient then
@@ -2571,6 +2586,60 @@ function Lobby.JoinInfinite()
 	State.Current = { Kind = "infinite", LevelId = Stage }
 	SaveState()
 	return JoinSolo(Stage, "Hard")
+end
+
+local function ClearedLevels()
+	local Set = {}
+	local Done = (Account.Profile().level_data or {}).completed_story_levels
+	if type(Done) == "table" then
+		for Id in pairs(Done) do
+			Set[tostring(Id)] = true
+		end
+	end
+	return Set
+end
+
+-- last act (act 6) of the world we skip acts 1-5 in
+function Lobby.Act6Stage()
+	local WorldId = Config.SkipWorld and tostring(Config.SkipWorld)
+		or (WorldLevelOrder.WORLD_ORDER and tostring(WorldLevelOrder.WORLD_ORDER[1]))
+	if not WorldId then
+		return nil, nil, nil
+	end
+	local World = Worlds[WorldId]
+	local Count = 0
+	if type(World) == "table" and type(World.levels) == "table" then
+		for _ in pairs(World.levels) do
+			Count += 1
+		end
+	end
+	if Count == 0 then
+		return nil, WorldId, nil
+	end
+	local Act = math.clamp(math.floor(tonumber(Config.SkipAct) or Count), 1, Count)
+	return StageOfWorld(WorldId, Act), WorldId, Act
+end
+
+-- returns Joined, AlreadyCleared
+function Lobby.JoinAct6()
+	local Stage, WorldId, Act = Lobby.Act6Stage()
+	if not Stage then
+		Log("no act 6 stage found")
+		return false, false
+	end
+	if ClearedLevels()[Stage] then
+		Log("act 6 (%s) already cleared", Stage)
+		return false, true
+	end
+	State.Current = { Kind = "act6", LevelId = Stage }
+	SaveState()
+	UI.Set("Clearing act 6 (" .. tostring(WorldId) .. ", act " .. tostring(Act) .. ")")
+	local Ok = JoinSolo(Stage, "Normal", Config.SkipStory and WorldId or nil)
+	if not Ok then
+		State.Current = nil
+		SaveState()
+	end
+	return Ok, false
 end
 
 -- ============================================================================
@@ -2724,6 +2793,17 @@ function Lobby.Plan()
 	if Level < Config.TargetLevel then
 		UI.Set("Story loop (level " .. Level .. "/" .. Config.TargetLevel .. ")")
 		return Lobby.JoinStory() and "joined" or "idle"
+	end
+	-- full-clear act 6 first: the world skipper jumps acts 1-5, then we clear
+	-- act 6 and leave. Infinite is only joined once act 6 is already cleared.
+	if Config.SkipStory then
+		local Joined, AlreadyCleared = Lobby.JoinAct6()
+		if Joined then
+			return "joined"
+		end
+		if not AlreadyCleared then
+			return "idle" -- skip/join failed: retry, never skip straight to Infinite
+		end
 	end
 	if Config.DoInfinite then
 		UI.Set("Infinite loop (level " .. Level .. ")")
@@ -3848,6 +3928,10 @@ function Match.Decide()
 	if Current.Kind == "challenge" then
 		return "leave"
 	end
+	if Current.Kind == "act6" then
+		Log("act 6 cleared - leaving for Infinite")
+		return "leave"
+	end
 	if Lobby.NeedHunt() then
 		Log("hunt due - leaving")
 		return "leave"
@@ -3927,7 +4011,8 @@ function Match.Run()
 				LoseVoted = false
 				Match.Reset("new match")
 			end
-			if not LoseVoted and Config.LoseWave > 0 then
+			-- act 6 is a full clear, not a loop: never vote lose there
+			if not LoseVoted and Config.LoseWave > 0 and Current.Kind ~= "act6" then
 				local Wave = Match.Wave()
 				if Wave and Wave >= Config.LoseWave then
 					LoseVoted = true

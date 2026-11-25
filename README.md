@@ -17,8 +17,11 @@ Set this before running the loader/script. Every field is optional — values be
 ```lua
 getgenv().Kaitun = {
 	-- progression / planner -------------------------------------------------
-	TargetLevel = 50,          -- story loop below this, Infinite at/above
+	TargetLevel = 50,          -- story loop below this, act 6 clear then Infinite
 	StoryAct = 1,              -- act of the first story world used for the loop
+	SkipStory = true,          -- skip acts 1-5 and full-clear act 6 before Infinite
+	SkipWorld = nil,           -- world to skip; nil = first story world
+	SkipAct = nil,             -- act to clear; nil = last act (act 6)
 	LoseWave = 6,              -- vote lose at this wave (0 = disabled)
 	NormalChallengeLevel = 15, -- level gate for the normal challenge
 	DailyChallengeLevel = 25,  -- level gate for the daily challenge
@@ -90,7 +93,7 @@ Only these keys are actually read from `getgenv().Kaitun`: `TargetLevel`, `Compa
 ## Phases
 
 - **Lobby (each visit):** redeem codes, use the celestial compass, claim daily / missions / quests / level rewards / battlepass, one 10x summon (once per account), equip the configured team (or best owned units), auto sell spare units, roll compass traits.
-- **Planner:** hunt when gems reach `RollAtGems` and the compass unit is missing → daily challenge → normal challenge → story loop below `TargetLevel` → Infinite at/above. With `ChallengesOnlyAfterCompass`, once the compass unit is owned it stops story/Infinite and only takes challenges/dailies.
+- **Planner:** hunt when gems reach `RollAtGems` and the compass unit is missing → daily challenge → normal challenge → story loop below `TargetLevel`. At/above `TargetLevel`: use the world skip to jump to act 6, full-clear it, leave to lobby, then join Infinite. With `ChallengesOnlyAfterCompass`, once the compass unit is owned it stops story/act 6/Infinite and only takes challenges/dailies.
 - **Match:** vote start, scan the lane once, place combat units then farms, upgrade by priority, auto-skip waves, vote lose at `LoseWave` in loop modes. At the end: replay the loop, or leave to lobby when a challenge is due / target level reached / hunt due.
 - **Traits:** once the compass unit is owned, spend tokens → star remnants → limited remnants until Unique (or another kept trait) lands or resources run out. Runs once per unit.
 - **Auto sell:** sells spare level-1 units; keeps locked, equipped, level > 1, Mythic/Secret, and one copy of each configured Team/Compass unit.
