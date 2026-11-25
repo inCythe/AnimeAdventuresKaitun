@@ -3234,8 +3234,9 @@ end
 
 -- spawn_cap, except the `unique` trait icon forces exactly one copy
 function Match.SpawnCap(UnitId, Uuid)
-	local Slot = Uuid and Match.Slots[Uuid]
+	local Slot = Uuid and Match.Slots[Uuid] or nil
 	if Slot then
+		-- the unique-trait icon forces exactly one copy
 		local Main = Slot:FindFirstChild("Main")
 		local Icons = Main and Main:FindFirstChild("TraitIcons")
 		local Unique = Icons and Icons:FindFirstChild("unique")
@@ -3246,6 +3247,18 @@ function Match.SpawnCap(UnitId, Uuid)
 	local Def = Units[UnitId]
 	if type(Def) == "table" and type(Def.spawn_cap) == "number" then
 		return Def.spawn_cap
+	end
+	-- Many older units (e.g. juvia) have NO spawn_cap in the data at all.
+	-- The game's own spawn GUI shows the real limit as "current/max" — parse
+	-- the max from placement_text ("3/3" -> 3) instead of skipping the unit.
+	if Slot then
+		local Text = Slot:FindFirstChild("placement_text")
+		if Text and Text:IsA("TextLabel") then
+			local Max = tonumber(tostring(Text.Text):match("/%s*(%d+)"))
+			if Max then
+				return Max
+			end
+		end
 	end
 	return nil
 end
@@ -3802,23 +3815,19 @@ function Match.TryPlace(Entry)
 	return true
 end
 
+-- No queue of skipped candidates: pick the FIRST affordable entry from the
+-- already-prioritised list, attempt it once, and let the next tick re-plan.
 function Match.PlaceTick()
 	local Counts, Combat, Farms = Match.Counts()
 	local FarmsAllowed = Combat >= Config.MinCombatFirst and Farms < Config.FarmQuota
-	Why("farmgate", "farm gate: %d combat (need %d), %d/%d farms -> %s",
-		Combat, Config.MinCombatFirst, Farms, Config.FarmQuota, FarmsAllowed and "open" or "closed")
+	local Money = Match.Money() or 0
 	for _, Entry in ipairs(Match.Priority) do
-		local Tag = Entry.UnitId .. " [" .. ShortId(Entry.Uuid) .. "]"
 		local Cap = Match.SpawnCap(Entry.UnitId, Entry.Uuid)
-		local Placed = Counts[Entry.UnitId] or 0
-		if not Cap then
-			Why("nocap:" .. Entry.UnitId, "place %s: no spawn cap in data - skipped", Tag)
-		elseif Placed >= Cap then
-			Why("cap:" .. Entry.UnitId, "place %s: at cap %d/%d - skipped", Tag, Placed, Cap)
-		elseif Entry.Farm and not FarmsAllowed then
-			Why("farmquota:" .. Entry.UnitId, "place %s: farm quota closed - skipped", Tag)
-		elseif Match.TryPlace(Entry) then
-			return true
+		if Cap and (Counts[Entry.UnitId] or 0) < Cap and (not Entry.Farm or FarmsAllowed) then
+			local Cost = Match.UnitCost(Entry.UnitId)
+			if Cost and Money >= Cost then
+				return Match.TryPlace(Entry)
+			end
 		end
 	end
 	return false
@@ -3855,101 +3864,65 @@ local function OrderUpgradeCandidates(Candidates)
 	return Ordered
 end
 
+-- Pick ONE affordable copy per tick, no queue of skipped units. The position
+-- key keeps each copy unique even when copies share the same uuid.
 function Match.UpgradeTick()
-	-- one candidate per placed MODEL: every copy is its own unit
+	if not Match.CanAct() then
+		return 0
+	end
 	local Candidates = {}
 	local Owned = Account.Collection().owned_units or {}
 	for _, Model in ipairs(Match.Models()) do
 		local Uuid = StatValue(Model, "uuid")
-		local UnitId = Match.UnitIdOf(Model)
-		local Key = CopyKey(Model)
-		local Position = CopyPos(Model)
-		local Tag = tostring(UnitId or "?") .. "@" .. Key
 		if Uuid and type(Owned[tostring(Uuid)]) ~= "table" then
-			Why("foreign", "upgrade [%s]: not in our collection - skipped", Tag)
 			continue -- never spend on a model we do not own
 		end
+		local UnitId = Match.UnitIdOf(Model)
 		local Level = tonumber(StatValue(Model, "upgrade"))
 		local Max = tonumber(StatValue(Model, "max_upgrade"))
-		if not UnitId then
-			Why("noid:" .. Key, "upgrade [%s]: no resolvable unit id - skipped", Tag)
-		elseif not Level then
-			Why("nolevel:" .. Key, "upgrade [%s]: no upgrade stat yet - skipped", Tag)
-		elseif Max and Level >= Max then
-			Why("max:" .. UnitId, "upgrade %s: already lvl %d/%d - skipped", Tag, Level, Max)
-		else
-			local Cost = NextUpgradeCost(UnitId, Level)
-			if not Cost then
-				Why("nocost:" .. UnitId, "upgrade %s: no cost for lvl %d - skipped", Tag, Level + 1)
-			else
-				Candidates[#Candidates + 1] = {
-					Model = Model,
-					Uuid = tostring(Uuid or "?"),
-					UnitId = UnitId,
-					Key = Key,
-					Pos = Position,
-					Level = Level,
-					Cost = Cost,
-					Rank = Match.Rank[UnitId] or 99,
-				}
-			end
+		if UnitId and Level and (not Max or Level < Max) and NextUpgradeCost(UnitId, Level) then
+			Candidates[#Candidates + 1] = {
+				Model = Model,
+				Uuid = tostring(Uuid or "?"),
+				UnitId = UnitId,
+				Key = CopyKey(Model),
+				Level = Level,
+				Rank = Match.Rank[UnitId] or 99,
+			}
 		end
 	end
 
-	Why("upscan", "upgrade scan: %d placed copies, %d eligible (owned only)",
-		#Match.Models(), #Candidates)
-	local Done = 0
+	local Money = Match.Money() or 0
+	local Chosen, ChosenCost, ChosenLevel
 	for _, Entry in ipairs(OrderUpgradeCandidates(Candidates)) do
-		if Done >= Config.UpgradesPerTick then
-			Why("perTick", "upgrade: %d done this tick (limit %d) - stopping", Done, Config.UpgradesPerTick)
-			break
-		end
-		if not Match.CanAct() then
-			Why("delay", "upgrade %s: waiting %.1fs action delay",
-				Entry.UnitId .. "@" .. Entry.Key,
-				Config.ActionDelay - (os.clock() - Match.LastAction))
-			break
-		end
-		if not Entry.Model.Parent then
-			continue -- the copy was sold / died since the list was built
-		end
-		-- re-read THIS copy's live level and cost: a copy upgraded a moment ago
-		-- must not be charged/credited with the old candidate's level
 		local LiveLevel = tonumber(StatValue(Entry.Model, "upgrade"))
-		if not LiveLevel then
-			continue
-		end
-		local LiveMax = tonumber(StatValue(Entry.Model, "max_upgrade"))
-		if LiveMax and LiveLevel >= LiveMax then
-			Why("max:" .. Entry.UnitId, "upgrade %s: now lvl %d/%d - skipped",
-				Entry.UnitId .. "@" .. Entry.Key, LiveLevel, LiveMax)
-			continue
-		end
-		local LiveCost = NextUpgradeCost(Entry.UnitId, LiveLevel)
-		if not LiveCost then
-			continue
-		end
-		local Money = Match.Money()
-		local Tag = Entry.UnitId .. "@" .. Entry.Key
-		if Money < LiveCost then
-			Why("money:up:" .. Entry.UnitId, "upgrade %s lvl %d: need %d, have %d - trying next copy",
-				Tag, LiveLevel, LiveCost, Money)
-			continue -- let another unique copy be upgraded instead
-		end
-		Reserve(LiveCost)
-		local Ok, Result = pcall(function()
-			return InvokeServer("upgrade_unit_ingame", Entry.Model)
-		end)
-		if Ok and Result ~= false then
-			Done += 1
-			Log("upgraded %s %d -> %d | cost %d | money %d -> %d | model %s",
-				Tag, LiveLevel, LiveLevel + 1, LiveCost, Money, Match.Money(), Entry.Model.Name)
-		else
-			Why("reject:up:" .. Entry.UnitId, "upgrade %s [%s]: server rejected (ok=%s, result=%s)",
-				Tag, Entry.Model.Name, tostring(Ok), tostring(Result))
+		if LiveLevel and Entry.Model.Parent then
+			local LiveMax = tonumber(StatValue(Entry.Model, "max_upgrade"))
+			local Cost = (not LiveMax or LiveLevel < LiveMax)
+				and NextUpgradeCost(Entry.UnitId, LiveLevel) or nil
+			if Cost and Money >= Cost then
+				Chosen, ChosenCost, ChosenLevel = Entry, Cost, LiveLevel
+				break
+			end
 		end
 	end
-	return Done
+	if not Chosen then
+		return 0
+	end
+
+	Reserve(ChosenCost)
+	local Ok, Result = pcall(function()
+		return InvokeServer("upgrade_unit_ingame", Chosen.Model)
+	end)
+	local Tag = Chosen.UnitId .. "@" .. Chosen.Key
+	if Ok and Result ~= false then
+		Log("upgraded %s %d -> %d | cost %d | money %d -> %d | model %s",
+			Tag, ChosenLevel, ChosenLevel + 1, ChosenCost, Money, Match.Money(), Chosen.Model.Name)
+		return 1
+	end
+	Why("reject:up", "upgrade %s: server rejected (ok=%s, result=%s)",
+		Tag, tostring(Ok), tostring(Result))
+	return 0
 end
 
 function Match.Reset(Reason)
