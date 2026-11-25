@@ -2808,18 +2808,68 @@ end
 -- ============================================================================
 -- team
 -- ============================================================================
-local RarityRank = {}
-for Index, Name in ipairs({ "Common", "Rare", "Epic", "Legendary", "Exclusive", "Mythic", "Secret" }) do
-	RarityRank[Name] = Index
+-- Real per-unit stats live on the collection copy, not in the Units module
+-- (the module only has base stats). Live-verified fields:
+--   trait_stats = { potency_stat = DAMAGE_MULT, speed_stat = ATTACK_SPEED_MULT,
+--                   range_stat = RANGE_MULT },  further_modifiers = {...},
+--   xp, shiny, traits. DPS scales with potency * speed and the xp-derived level.
+local function TraitMultipliers(Unit)
+	local Stats = type(Unit.trait_stats) == "table" and Unit.trait_stats or {}
+	local Potency = tonumber(Stats.potency_stat) or 1
+	local Speed = tonumber(Stats.speed_stat) or 1
+	local Range = tonumber(Stats.range_stat) or 1
+	local Mods = type(Unit.further_modifiers) == "table" and Unit.further_modifiers or {}
+	for _, Key in ipairs({ "potency_stat", "damage", "damage_multiplier", "dmg" }) do
+		local Value = tonumber(Mods[Key])
+		if Value then
+			Potency *= Value
+		end
+	end
+	for _, Key in ipairs({ "speed_stat", "attack_speed", "speed" }) do
+		local Value = tonumber(Mods[Key])
+		if Value then
+			Speed *= Value
+		end
+	end
+	return Potency, Speed, Range
+end
+
+-- merge upgrade[] deltas up to the unit's real (xp-derived) level
+local function LevelStats(UnitId, Level)
+	local Def = Units[UnitId]
+	if type(Def) ~= "table" then
+		return {}
+	end
+	local Merged = {}
+	for Key, Value in pairs(Def) do
+		Merged[Key] = Value
+	end
+	if Level > 0 and type(Def.upgrade) == "table" then
+		for Index = 1, Level do
+			local Entry = Def.upgrade[Index]
+			if type(Entry) == "table" then
+				for Key, Value in pairs(Entry) do
+					Merged[Key] = Value
+				end
+			end
+		end
+	end
+	return Merged
 end
 
 local function ScoreUnit(Unit)
-	local Def = Units[Unit.unit_id] or {}
-	local Traits = Util.Count(Unit.traits)
-	return (RarityRank[Def.rarity] or 0) * 100000
-		+ ((tonumber(Def.damage) or 0) + (tonumber(Def.health) or 0) / 100) * 10
-		+ (Unit.shiny and 5000 or 0)
-		+ Traits * 100
+	local Level = UnitLevelOf(Unit)
+	local Stats = LevelStats(Unit.unit_id, Level)
+	local Damage = tonumber(Stats.damage) or 0
+	local Cooldown = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown) or 0
+	local Dps = Cooldown > 0 and (Damage / Cooldown) or Damage
+	local Potency, Speed, Range = TraitMultipliers(Unit)
+	-- potency boosts damage, speed boosts attack frequency, both scale DPS;
+	-- shiny is a flat 1.5x multiplier in the game.
+	local Score = Dps * Potency * Speed * (Unit.shiny and 1.5 or 1)
+	-- tiny tie-breakers that never outrank a real DPS difference
+	Score += Damage * 0.0001 + (tonumber(Stats.range) or 0) * 0.00001 + Range * 0.000001
+	return Score
 end
 
 local function BestCopy(UnitId)
@@ -2994,18 +3044,35 @@ end
 -- ============================================================================
 Lobby.Skip = {} -- lobby templates that refused the lock
 
+-- Only templates physically inside workspace._LOBBIES.Story may be joined.
+-- more_lobby_params also lists challenge/event/portal templates that reuse the
+-- same names, so filtering by name alone is not enough - use the Story folder
+-- itself as the source of truth.
+local function StoryTemplateNames()
+	local Set = {}
+	local Root = workspace:FindFirstChild("_LOBBIES")
+	local Folder = Root and Root:FindFirstChild("Story")
+	if Folder then
+		for _, Model in ipairs(Folder:GetChildren()) do
+			Set[Model.Name] = true
+		end
+	end
+	return Set
+end
+
 local function FindLobby()
-	for _, Folder in ipairs(workspace:GetChildren()) do
-		if Folder.Name:sub(1, 1) == "_" then
-			for _, Model in ipairs(Folder:GetDescendants()) do
-				local Owner = Model:FindFirstChild("Owner")
-				if Owner and Owner:IsA("ValueBase") then
-					local Value = Owner.Value
-					local Name = typeof(Value) == "Instance" and Value.Name or tostring(Value)
-					if Name == Player.Name then
-						return Model
-					end
-				end
+	local Root = workspace:FindFirstChild("_LOBBIES")
+	local Folder = Root and Root:FindFirstChild("Story")
+	if not Folder then
+		return nil
+	end
+	for _, Model in ipairs(Folder:GetDescendants()) do
+		local Owner = Model:FindFirstChild("Owner")
+		if Owner and Owner:IsA("ValueBase") then
+			local Value = Owner.Value
+			local Name = typeof(Value) == "Instance" and Value.Name or tostring(Value)
+			if Name == Player.Name then
+				return Model
 			end
 		end
 	end
@@ -3013,28 +3080,13 @@ local function FindLobby()
 end
 
 local function LobbyCandidates(LevelId)
-	local Story = {}
-	local Root = workspace:FindFirstChild("_LOBBIES")
-	local Folder = Root and Root:FindFirstChild("Story")
-	if Folder then
-		for _, Model in ipairs(Folder:GetChildren()) do
-			Story[Model.Name] = true
-		end
-	end
+	local Story = StoryTemplateNames()
 	local List = {}
 	for Name, Data in pairs((LobbyServiceClient and LobbyServiceClient.more_lobby_params) or {}) do
-		local Bound = type(Data) == "table" and type(Data._level_data) == "table" and Data._level_data.id
-		local Rank
-		if Lobby.Skip[Name] then
-			Rank = nil
-		elseif Bound == LevelId then
-			Rank = 1
-		elseif not Bound and Story[Name] then
-			Rank = 2
-		elseif not Bound then
-			Rank = 3
-		end
-		if Rank then
+		if Story[Name] and not Lobby.Skip[Name] then
+			local Bound = type(Data) == "table" and type(Data._level_data) == "table" and Data._level_data.id
+			-- prefer a template already bound to this level, else any free one
+			local Rank = (Bound == LevelId) and 1 or 2
 			List[#List + 1] = { Name = Name, Rank = Rank }
 		end
 	end
