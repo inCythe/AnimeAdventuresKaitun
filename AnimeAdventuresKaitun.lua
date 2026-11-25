@@ -2813,6 +2813,44 @@ end
 --   trait_stats = { potency_stat = DAMAGE_MULT, speed_stat = ATTACK_SPEED_MULT,
 --                   range_stat = RANGE_MULT },  further_modifiers = {...},
 --   xp, shiny, traits. DPS scales with potency * speed and the xp-derived level.
+-- Equipped relic stats live on the unique-item entry, not on the unit. The
+-- relic uuid is Unit._equipped_relic; profile.inventory.unique_items[n] holds
+-- _unique_item_data._unique_relic_data with the real crit/mul buffs (the 27%
+-- crit shown on the unit card). Cached per relic uuid.
+local RelicBuffCache = {}
+local function RelicBuffs(Unit)
+	local Uuid = type(Unit._equipped_relic) == "string" and Unit._equipped_relic or nil
+	if not Uuid then
+		return 1, 0
+	end
+	local Cached = RelicBuffCache[Uuid]
+	if Cached then
+		return Cached.Mul, Cached.Crit
+	end
+	local Mul, Crit = 1, 0
+	local Items = Account.Profile().inventory
+	Items = type(Items) == "table" and type(Items.unique_items) == "table" and Items.unique_items or {}
+	for _, Entry in pairs(Items) do
+		if type(Entry) == "table" and Entry.uuid == Uuid then
+			local Data = type(Entry._unique_item_data) == "table"
+				and type(Entry._unique_item_data._unique_relic_data) == "table"
+				and Entry._unique_item_data._unique_relic_data or nil
+			if Data then
+				for _, Buff in pairs(type(Data._core_damage_type_buffs) == "table"
+					and Data._core_damage_type_buffs or {}) do
+					if type(Buff) == "table" then
+						Mul *= 1 + (tonumber(Buff.mul) or 0)
+						Crit += tonumber(Buff.crit) or 0
+					end
+				end
+			end
+			break
+		end
+	end
+	RelicBuffCache[Uuid] = { Mul = Mul, Crit = Crit }
+	return Mul, Crit
+end
+
 local function TraitMultipliers(Unit)
 	local Stats = type(Unit.trait_stats) == "table" and Unit.trait_stats or {}
 	local Potency = tonumber(Stats.potency_stat) or 1
@@ -2831,6 +2869,9 @@ local function TraitMultipliers(Unit)
 			Speed *= Value
 		end
 	end
+	local RelicMul, RelicCrit = RelicBuffs(Unit)
+	-- crit is a 2x hit, so expected value is 1 + crit chance
+	Potency *= RelicMul * (1 + math.clamp(RelicCrit, 0, 1))
 	return Potency, Speed, Range
 end
 
