@@ -2141,6 +2141,38 @@ function Lobby.Compass()
 	end
 end
 
+-- The hatch result and the collection replicate after the buy_from_banner
+-- remote returns, so sell only once the new units are actually visible.
+local function HatchFingerprint()
+	local Stats = Account.Profile()._hatched_unit_stats or {}
+	local Parts = {}
+	for Id, Counts in pairs(Stats) do
+		Parts[#Parts + 1] = tostring(Id) .. ":" .. tostring(tonumber(Counts.normal) or 0)
+			.. "/" .. tostring(tonumber(Counts.shiny) or 0)
+	end
+	table.sort(Parts)
+	return table.concat(Parts, ",")
+end
+
+local function OwnedCount()
+	return Util.Count(Account.Collection().owned_units or {})
+end
+
+local function SellAfterSummon(HatchBefore, CountBefore)
+	local Deadline = os.clock() + 8
+	local Changed = false
+	repeat
+		task.wait(0.15)
+		Changed = (HatchFingerprint() ~= HatchBefore) or (OwnedCount() ~= CountBefore)
+	until Changed or os.clock() >= Deadline
+	if Changed then
+		LogT("Sell", "new units replicated -> filtering collection")
+	else
+		LogT("Sell", "no replication detected -> filtering current collection")
+	end
+	Lobby.AutoSell()
+end
+
 function Lobby.SummonOnce()
 	if not Config.Summon10Once or State.Summoned then
 		return
@@ -2156,6 +2188,8 @@ function Lobby.SummonOnce()
 	end
 	Cinematic.Install(true)
 	local Before = Account.Gems()
+	local HatchBefore = HatchFingerprint()
+	local CountBefore = OwnedCount()
 	Util.Call(5, InvokeServer, "buy_from_banner", Config.SummonBanner, "gems10")
 	local Deadline = os.clock() + 4
 	repeat
@@ -2164,8 +2198,8 @@ function Lobby.SummonOnce()
 	if Account.Gems() < Before then
 		State.Summoned = true
 		SaveState()
-		Log("first 10x done on %s", Config.SummonBanner)
-		Lobby.AutoSell()
+		LogT("Summon", "first 10x done on %s", Config.SummonBanner)
+		SellAfterSummon(HatchBefore, CountBefore)
 	else
 		Log("first 10x was ignored - will retry next visit")
 	end
@@ -2191,18 +2225,20 @@ function Lobby.Hunt()
 	local Banner = Banners[Config.SummonBanner] or {}
 	local Cost = (tonumber(Banner.gem_cost) or 50) * 10
 	local Rolls = 0
-	Log("hunting %s with %d gems", Account.UnitName(Target), Account.Gems())
+	local LastHatch, LastCount = HatchFingerprint(), OwnedCount()
+	LogT("Hunt", "hunting %s with %d gems", Account.UnitName(Target), Account.Gems())
 	while Rolls < Config.MaxHuntRolls do
 		if Account.HasUnit(Target) then
-			Log("got %s after %d roll(s)", Account.UnitName(Target), Rolls)
+			LogT("Hunt", "got %s after %d roll(s)", Account.UnitName(Target), Rolls)
 			Lobby.AutoRollTraits(Target) -- roll for Unique as soon as it drops
-			Lobby.AutoSell()
+			SellAfterSummon(LastHatch, LastCount)
 			return true
 		end
 		if Account.Gems() - Cost < Config.KeepGems then
 			break
 		end
 		local Before = Account.Gems()
+		LastHatch, LastCount = HatchFingerprint(), OwnedCount()
 		Util.Call(5, InvokeServer, "buy_from_banner", Config.SummonBanner, "gems10")
 		local Deadline = os.clock() + 5
 		repeat
@@ -2210,11 +2246,14 @@ function Lobby.Hunt()
 		until Account.Gems() < Before or Account.HasUnit(Target) or os.clock() >= Deadline
 		if Account.Gems() < Before then
 			Rolls += 1
+			-- sell after EVERY batch, not only when the compass unit finally drops
+			SellAfterSummon(LastHatch, LastCount)
+			LastHatch, LastCount = HatchFingerprint(), OwnedCount()
 		else
 			task.wait(1)
 		end
 	end
-	Log("hunt stopped after %d roll(s), %d gems left", Rolls, Account.Gems())
+	LogT("Hunt", "stopped after %d roll(s), %d gems left", Rolls, Account.Gems())
 	return false
 end
 
