@@ -2909,6 +2909,7 @@ Match.Circles = {}
 Match.Priority = {}
 Match.Rank = {}
 Match.Slots = {}
+Match.Caps = {}   -- uuid -> real spawn cap resolved from the game UI
 Match.Fails = 0
 Match.Need = true
 Match.Tries = 0
@@ -3232,6 +3233,52 @@ function Match.RefreshSlots()
 	Match.Slots = Slots
 end
 
+-- The spawn GUI only shows the true cap while that slot is selected (the
+-- unselected placeholder is meaningless). Select each slot briefly, confirm
+-- the game's selected unit_id matches, then cache the "current/max" cap.
+function Match.DiscoverCaps()
+	local GuiService = game:GetService("GuiService")
+	local Previous = nil
+	pcall(function()
+		Previous = GuiService.SelectedObject
+	end)
+	local Resolved = 0
+	for Uuid, Slot in pairs(Match.Slots) do
+		if Match.Caps[Uuid] == nil then
+			local UnitId = UnitIdForUuid(Uuid)
+			pcall(function()
+				if Match.Grid and Match.Grid._on_select_single_unit then
+					Match.Grid._on_select_single_unit(UnitId)
+				end
+			end)
+			pcall(function()
+				Slot.Activated:Fire()
+			end)
+			pcall(function()
+				GuiService.SelectedObject = Slot
+			end)
+			task.wait(0.12)
+			pcall(function()
+				local Selected = Match.Grid and Match.Grid.unit_id or nil
+				if UnitId and Selected == UnitId then
+					local Text = Slot:FindFirstChild("placement_text")
+					if Text and Text:IsA("TextLabel") then
+						local Max = tonumber(tostring(Text.Text):match("/%s*(%d+)"))
+						if Max then
+							Match.Caps[Uuid] = Max
+							Resolved += 1
+						end
+					end
+				end
+			end)
+		end
+	end
+	pcall(function()
+		GuiService.SelectedObject = Previous
+	end)
+	Log("spawn caps resolved: %d/%d", Resolved, Util.Count(Match.Slots))
+end
+
 -- spawn_cap, except the `unique` trait icon forces exactly one copy
 function Match.SpawnCap(UnitId, Uuid)
 	local Slot = Uuid and Match.Slots[Uuid] or nil
@@ -3244,21 +3291,14 @@ function Match.SpawnCap(UnitId, Uuid)
 			return 1
 		end
 	end
+	-- the UI only shows the real cap while the slot is selected, so use the
+	-- value resolved by Match.DiscoverCaps() (verified against unit_id)
+	if Uuid and Match.Caps[Uuid] then
+		return Match.Caps[Uuid]
+	end
 	local Def = Units[UnitId]
 	if type(Def) == "table" and type(Def.spawn_cap) == "number" then
 		return Def.spawn_cap
-	end
-	-- Many older units (e.g. juvia) have NO spawn_cap in the data at all.
-	-- The game's own spawn GUI shows the real limit as "current/max" — parse
-	-- the max from placement_text ("3/3" -> 3) instead of skipping the unit.
-	if Slot then
-		local Text = Slot:FindFirstChild("placement_text")
-		if Text and Text:IsA("TextLabel") then
-			local Max = tonumber(tostring(Text.Text):match("/%s*(%d+)"))
-			if Max then
-				return Max
-			end
-		end
 	end
 	return nil
 end
@@ -4098,6 +4138,8 @@ function Match.Run()
 	end
 	Match.Init()
 	Match.Settings()
+	Match.RefreshSlots()
+	task.spawn(Match.DiscoverCaps)
 	if Config.StatsOverlay then
 		UI.Overlay()
 	end
