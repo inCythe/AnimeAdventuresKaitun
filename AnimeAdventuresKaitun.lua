@@ -3261,9 +3261,10 @@ function Lobby.JoinAct6()
 		return true, false
 	end
 
-	-- only if the world skip failed: full-clear the highest uncleared act
-	-- (Kind = "act6" => no vote-lose, leave after the clear), walking down the
-	-- acts until act 6 itself is cleared. The planner then moves to Infinite.
+	-- only if the world skip failed: play the first uncleared act with
+	-- Kind = "act6" => no vote-lose, leave after the clear. Each lobby visit
+	-- advances to the next uncleared act (acts 1-5, then the act 6 target),
+	-- so the world is cleared the normal way before Infinite is joined.
 	if Config.SkipStory then
 		local World = Worlds[WorldId]
 		local Count = 0
@@ -3272,25 +3273,20 @@ function Lobby.JoinAct6()
 				Count += 1
 			end
 		end
-		local function ClearAct(Index)
+		for Index = 1, Count do
 			local Id = StageOfWorld(WorldId, Index)
-			if not Id or Cleared[Id] then
-				return false
+			if Id and not Cleared[Id] then
+				Log("world skip failed - clearing uncleared act %d/%d (%s)", Index, Count, Id)
+				State.Current = { Kind = "act6", LevelId = Id }
+				SaveState()
+				UI.Set(("Clearing act %d (%s)"):format(Index, tostring(WorldId)))
+				local Joined = JoinSolo(Id, "Normal")
+				if not Joined then
+					State.Current = nil
+					SaveState()
+				end
+				return Joined, false
 			end
-			Log("world skip failed - full-clearing act %d/%d (%s)", Index, Count, Id)
-			State.Current = { Kind = "act6", LevelId = Id }
-			SaveState()
-			UI.Set(("Clearing act %d (%s)"):format(Index, tostring(WorldId)))
-			return JoinSolo(Id, "Normal")
-		end
-		-- earlier acts first, highest -> lowest, then the final act itself
-		for Index = Count - 1, 1, -1 do
-			if ClearAct(Index) then
-				return true, false
-			end
-		end
-		if ClearAct(Count) then
-			return true, false
 		end
 	end
 
