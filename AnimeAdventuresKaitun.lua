@@ -2127,38 +2127,43 @@ function Lobby.ClaimBattlepass()
 	if type(Defs) ~= "table" or type(Data) ~= "table" then
 		return
 	end
-	local Total = 0
-	for Track, Info in pairs(Data) do
-		local Def = Defs[Track]
-		if type(Info) == "table" and type(Def) == "table" then
-			local Xp = tonumber(Info.xp) or 0
-			local Claimed = Info.claimed_tiers or {}
-			local Normal = type(Claimed.normal) == "table" and Claimed.normal or {}
-			local Premium = type(Claimed.premium) == "table" and Claimed.premium or {}
-			local HasPremium = Info.has_premium == true
-			local Tiers = {}
-			for Key, TierDef in pairs(Def.tiers or {}) do
-				local Tier = tonumber(Key) or tonumber(TierDef.tier) or tonumber(TierDef.level)
-				local Required = tonumber(TierDef.xp_required)
-				if Tier and Required and Xp >= Required then
-					local NormalOpen = TierDef.normal_reward ~= nil and not Normal[tostring(Tier)] and not Normal[Tier]
-					local PremiumOpen = HasPremium and TierDef.premium_reward ~= nil
-						and not Premium[tostring(Tier)] and not Premium[Tier]
-					if NormalOpen or PremiumOpen then
-						Tiers[#Tiers + 1] = Tier
-					end
-				end
-			end
-			table.sort(Tiers)
-			for _, Tier in ipairs(Tiers) do
-				Util.Call(10, InvokeServer, "claim_battlepass_rewards", Track, Tier)
-				task.wait(0.2)
-				Total += 1
+	-- only the current pass can be claimed; older passes stay in the profile
+	-- with xp but their rewards are rejected. The game marks the active one.
+	local Track = GameplaySettings.CURRENT_BATTLEPASS
+	if type(Track) ~= "string" or Track == "" then
+		Track = "mana_october"
+	end
+	local Def, Info = Defs[Track], Data[Track]
+	if type(Def) ~= "table" or type(Info) ~= "table" then
+		return
+	end
+	local Xp = tonumber(Info.xp) or 0
+	local Claimed = Info.claimed_tiers or {}
+	local Normal = type(Claimed.normal) == "table" and Claimed.normal or {}
+	local Premium = type(Claimed.premium) == "table" and Claimed.premium or {}
+	local HasPremium = Info.has_premium == true
+	local Tiers = {}
+	for Key, TierDef in pairs(Def.tiers or {}) do
+		local Tier = tonumber(Key) or tonumber(TierDef.tier) or tonumber(TierDef.level)
+		local Required = tonumber(TierDef.xp_required)
+		if Tier and Required and Xp >= Required then
+			local NormalOpen = TierDef.normal_reward ~= nil and not Normal[tostring(Tier)] and not Normal[Tier]
+			local PremiumOpen = HasPremium and TierDef.premium_reward ~= nil
+				and not Premium[tostring(Tier)] and not Premium[Tier]
+			if NormalOpen or PremiumOpen then
+				Tiers[#Tiers + 1] = Tier
 			end
 		end
 	end
+	table.sort(Tiers)
+	local Total = 0
+	for _, Tier in ipairs(Tiers) do
+		Util.Call(10, InvokeServer, "claim_battlepass_rewards", Track, Tier)
+		task.wait(0.2)
+		Total += 1
+	end
 	if Total > 0 then
-		Log("battlepass: %d tier(s) claimed", Total)
+		Log("battlepass %s: %d tier(s) claimed", Track, Total)
 	end
 end
 
