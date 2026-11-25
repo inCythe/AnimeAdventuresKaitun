@@ -2430,7 +2430,8 @@ function Lobby.EquipTeam()
 		end
 	end
 	if Same then
-		return
+		LogT("Team", "already equipped %d/%d", Util.Count(Current), Slots)
+		return Util.Count(Current) == Slots or Util.Count(Current) == #Want
 	end
 
 	local UnequipAll = Util.Endpoint("unequip_all")
@@ -2471,12 +2472,26 @@ function Lobby.EquipTeam()
 		end
 	end
 
-	local Left = Util.Count(EquippedSet())
-	if Left == #Want then
-		LogT("Team", "equipped %d", Left)
-	else
-		Log("team: %d/%d equipped", Left, #Want)
+	-- wait for the replicated equipment state before declaring the slots full
+	local VerifyDeadline = os.clock() + 6
+	while os.clock() < VerifyDeadline do
+		local Now = EquippedSet()
+		local Missing = 0
+		for Uuid in pairs(Target) do
+			if not Now[Uuid] then
+				Missing += 1
+			end
+		end
+		if Missing == 0 then
+			break
+		end
+		task.wait(0.4)
 	end
+
+	local Left = Util.Count(EquippedSet())
+	local Full = Left == #Want
+	LogT("Team", "equipped %d/%d slots (%s)", Left, Slots, Full and "full" or "partial")
+	return Full
 end
 
 
@@ -2983,8 +2998,26 @@ function Lobby.Run()
 	Lobby.Compass()
 	Lobby.Claims()
 	Lobby.SummonOnce()
-	Lobby.EquipTeam()
-	Lobby.AutoSell() -- clean leftovers from previous sessions too
+	-- equip the full team BEFORE selling anything; otherwise a newly summoned
+	-- unit can be sold before it ever reaches a slot
+	local TeamFull = false
+	if not Config.EquipTeam then
+		TeamFull = true -- user opted out of team equipping
+	else
+		for Attempt = 1, 4 do
+			TeamFull = Lobby.EquipTeam() == true
+			if TeamFull then
+				break
+			end
+			LogT("Team", "slots not full (try %d) - waiting before selling", Attempt)
+			task.wait(2)
+		end
+	end
+	if TeamFull then
+		Lobby.AutoSell() -- only after every slot is equipped
+	else
+		LogT("Sell", "skipped - team slots are not full yet")
+	end
 	-- the compass unit can arrive from the pick, the first summon or a hunt;
 	-- one guarded call covers all three (state prevents rolling twice)
 	if Config.CompassUnit then
