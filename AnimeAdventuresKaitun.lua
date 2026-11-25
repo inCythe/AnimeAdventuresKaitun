@@ -1427,50 +1427,74 @@ end
 -- ============================================================================
 -- cinematic skip (summon / hatch / reward popups)
 -- ============================================================================
-local Cinematic = { Last = 0, Hooked = {} }
+-- Same hooker as skip_cutscenes.lua, running in the background: keep scanning
+-- the GC and hook every matching function, with no "5 of 5" completion limit.
+local Cinematic = {
+	HookedFn = setmetatable({}, { __mode = "k" }), -- function identity, weak keys
+	Count = 0,
+}
 
-function Cinematic.Install(Force)
-	if not Config.SkipCutscenes then
-		return
-	end
-	if not Force and os.clock() - Cinematic.Last < 20 then
-		return
-	end
-	Cinematic.Last = os.clock()
+local CINEMATIC_NAMES = {
+	open_star_new = true,
+	show_unit_and_item_rewards = true,
+	on_show_hatch_effect = true,
+	on_show_item_hatch_effect = true,
+	on_units_hatched_through_banner = true,
+}
 
-	local GetGc, Hook, IsLClosure = getgc, hookfunction, islclosure
-	if type(GetGc) ~= "function" or type(Hook) ~= "function" or type(IsLClosure) ~= "function" then
-		return
-	end
-	local Names = {
-		open_star_new = true,
-		show_unit_and_item_rewards = true,
-		on_show_hatch_effect = true,
-		on_show_item_hatch_effect = true,
-		on_units_hatched_through_banner = true,
-	}
-	local Ok, Gc = pcall(GetGc, true)
-	if not (Ok and type(Gc) == "table") then
-		return
-	end
-	for _, Value in ipairs(Gc) do
-		if type(Value) == "function" and not Cinematic.Hooked[Value] and IsLClosure(Value) then
-			local Info = debug.getinfo(Value)
-			local Name = Info and Info.name
-			if Name and Names[Name] then
-				if pcall(Hook, Value, function(...)
-					for _, Arg in ipairs({ ... }) do
-						if type(Arg) == "function" then
-							pcall(Arg)
-						end
-					end
-				end) then
-					Cinematic.Hooked[Value] = true
-				end
-			end
+local function CinematicStub(...)
+	for _, Arg in ipairs({ ... }) do
+		if type(Arg) == "function" then
+			pcall(Arg)
 		end
 	end
 end
+Cinematic.HookedFn[CinematicStub] = true -- never hook our own replacement
+
+local IsLClosure = type(islclosure) == "function" and islclosure or function() return true end
+
+task.spawn(function()
+	local Last = -1
+	while true do
+		if Config.SkipCutscenes then
+			local Ok, Gc = pcall(getgc, true)
+			if Ok and type(Gc) == "table" then
+				for _, Value in pairs(Gc) do
+					if typeof(Value) == "function" and not Cinematic.HookedFn[Value]
+						and IsLClosure(Value) then
+						local Info = debug.getinfo(Value)
+						local Name = Info and Info.name
+						if Name and CINEMATIC_NAMES[Name] then
+							hookfunction(Value, CinematicStub)
+							Cinematic.HookedFn[Value] = true
+							Cinematic.Count += 1
+						end
+					elseif type(Value) == "table" then
+						for Name in pairs(CINEMATIC_NAMES) do
+							local Fn = rawget(Value, Name)
+							if type(Fn) == "function" and not Cinematic.HookedFn[Fn]
+								and IsLClosure(Fn) then
+								hookfunction(Fn, CinematicStub)
+								Cinematic.HookedFn[Fn] = true
+								Cinematic.Count += 1
+								-- the field now holds our stub - don't hook it again
+								local Now = rawget(Value, Name)
+								if type(Now) == "function" then
+									Cinematic.HookedFn[Now] = true
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		if Cinematic.Count ~= Last then
+			Last = Cinematic.Count
+			LogT("Cinematic", "hooked %d function(s)", Cinematic.Count)
+		end
+		task.wait(1)
+	end)
+end)
 
 -- ============================================================================
 -- anti-afk
@@ -1485,6 +1509,53 @@ function Account.AntiAfk()
 	end)
 end
 
+-- ============================================================================
+-- game settings - fire toggle_setting only when a value is actually wrong
+-- ============================================================================
+local GameSettings = {
+	Lobby = {
+		{ "hide_other_pets", true },
+		{ "quick_summon", true },
+	},
+	Match = {
+		{ "disable_effects", true },
+		{ "show_overheads", false },
+		{ "disable_auto_open_overhead", true },
+	},
+}
+
+-- Player._settings mirrors every toggle_setting key as a ValueBase child
+local function SettingValue(Name)
+	local Folder = Player:FindFirstChild("_settings")
+	local Value = Folder and Folder:FindFirstChild(Name)
+	if Value and Value:IsA("ValueBase") then
+		return Value.Value -- false is a valid value, don't use an and/or chain
+	end
+	return nil
+end
+
+function GameSettings.Ensure(Which)
+	local List = GameSettings[Which]
+	if type(List) ~= "table" then
+		return
+	end
+	local Ep = Util.Endpoint("toggle_setting")
+	if not Ep or not Ep:IsA("RemoteFunction") then
+		return
+	end
+	for _, Entry in ipairs(List) do
+		local Name, Want = Entry[1], Entry[2]
+		if SettingValue(Name) ~= Want then
+			local Ok, Result = Util.Call(5, Ep.InvokeServer, Ep, Name, Want)
+			if Ok and Result ~= false then
+				LogT("Settings", "%s = %s", Name, tostring(Want))
+			else
+				LogT("Settings", "%s = %s failed: %s", Name, tostring(Want), tostring(Result))
+			end
+			task.wait(0.15)
+		end
+	end
+end
 
 -- ============================================================================
 -- lobby
@@ -2205,7 +2276,6 @@ function Lobby.SummonOnce()
 	if Account.Gems() < Cost then
 		return
 	end
-	Cinematic.Install(true)
 	local Before = Account.Gems()
 	local HatchBefore = HatchFingerprint()
 	local CountBefore = OwnedCount()
@@ -2990,6 +3060,8 @@ function Lobby.Run()
 		warn("[AA Kaitun] lobby did not finish loading")
 		return
 	end
+	GameSettings.Ensure("Lobby") -- before the first summon so quick_summon applies
+	local LastSettings = os.clock()
 	if Config.ShowStatus then
 		UI.Lobby()
 	end
@@ -3025,6 +3097,10 @@ function Lobby.Run()
 	end
 
 	while Loader.IsLobby do
+		if os.clock() - LastSettings >= 15 then
+			LastSettings = os.clock()
+			GameSettings.Ensure("Lobby")
+		end
 		if Env.AAKaitunStop then
 			Log("stop flag set - exiting")
 			return
@@ -3385,7 +3461,8 @@ end
 
 -- The spawn GUI only shows the true cap while that slot is selected (the
 -- unselected placeholder is meaningless). Select each slot briefly, confirm
--- the game's selected unit_id matches, then cache the "current/max" cap.
+-- the game's selected unit_id matches, cache the "current/max" cap, then
+-- deselect with Q so no unit stays selected after the scan.
 function Match.DiscoverCaps()
 	local GuiService = game:GetService("GuiService")
 	local VIM = game:GetService("VirtualInputManager")
@@ -3400,6 +3477,16 @@ function Match.DiscoverCaps()
 		local Def = Units[UnitId]
 		local Name = type(Def) == "table" and Def.name or nil
 		return type(Name) == "string" and tostring(Name):lower() == tostring(Now):lower()
+	end
+
+	-- Q is the game's "deselect unit" key. Clearing GuiService.SelectedObject
+	-- only drops UI focus; it leaves the unit selected in-game.
+	local function Deselect()
+		pcall(function()
+			VIM:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+			task.wait(0.02)
+			VIM:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+		end)
 	end
 
 	local Resolved, Failed = 0, {}
@@ -3442,12 +3529,14 @@ function Match.DiscoverCaps()
 				Failed[#Failed + 1] = tostring(UnitId) .. " [" .. tostring(Uuid):sub(1, 8)
 					.. "] unit_id=" .. tostring(Match.Grid and Match.Grid.unit_id)
 			end
+			Deselect() -- unselect this unit before moving on to the next slot
 		end
 	end
 	-- leave nothing selected once cap reading is finished
 	pcall(function()
 		GuiService.SelectedObject = nil
 	end)
+	Deselect()
 	LogT("Caps", "selection cleared")
 	LogT("Caps", "resolved %d/%d%s", Resolved, Util.Count(Match.Slots),
 		#Failed > 0 and (" | failed: " .. table.concat(Failed, ", ")) or "")
@@ -4324,6 +4413,8 @@ function Match.Run()
 	end
 	Match.Init()
 	Match.Settings()
+	GameSettings.Ensure("Match")
+	local LastSettings = os.clock()
 	-- the spawn GUI is built asynchronously: wait for the slots before trying
 	-- to read caps, and retry until they resolve (or the match is well underway)
 	task.spawn(function()
@@ -4352,6 +4443,10 @@ function Match.Run()
 	local WasActive = false
 
 	while true do
+		if os.clock() - LastSettings >= 15 then
+			LastSettings = os.clock()
+			GameSettings.Ensure("Match")
+		end
 		if Env.AAKaitunStop then
 			Log("stop flag set - exiting")
 			return
@@ -4413,9 +4508,6 @@ Env.AAKaitun = {
 local function Main()
 	LoadState()
 	Account.AntiAfk()
-	if Config.SkipCutscenes then
-		Cinematic.Install(true)
-	end
 	if not Account.WaitSession(90) then
 		warn("[AA Kaitun] profile never loaded")
 		return
