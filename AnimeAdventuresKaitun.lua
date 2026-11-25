@@ -161,7 +161,8 @@ local Config = {
 	Summon10Once = true,          -- one 10x roll per account (saved to disk)
 	SummonBanner = "EventClover",
 	HuntFrom = 20000,             -- go hunting when gems reach this
-	HuntAtMinute = 0,             -- only hunt at XX:00 (nil = any time)
+	HuntAtMinute = 0,             -- hunt at XX:00 (nil = ignore this slot)
+	HuntAtMinute2 = 30,           -- also hunt at XX:30 (nil = only HuntAtMinute; both nil = any time)
 	KeepGems = 0,                 -- never roll below this
 	MaxHuntRolls = 400,
 	CompassUnit = "elyssia",      -- the celestial compass pick (nil = skip)
@@ -243,6 +244,7 @@ if type(User) == "table" then
 	if Num(User.TargetLevel) then Config.TargetLevel = math.floor(Num(User.TargetLevel)) end
 	if Num(User.RollAtGems) then Config.HuntFrom = Num(User.RollAtGems) end
 	if Num(User.HuntAtMinute) then Config.HuntAtMinute = math.floor(Num(User.HuntAtMinute)) end
+	if Num(User.HuntAtMinute2) then Config.HuntAtMinute2 = math.floor(Num(User.HuntAtMinute2)) end
 	if Num(User.SaveGems) then Config.KeepGems = Num(User.SaveGems) end
 	if User.CompassUnit ~= nil then Config.CompassUnit = tostring(User.CompassUnit):lower() end
 	if type(User.Team) == "table" then Config.Team = User.Team end
@@ -1959,10 +1961,11 @@ local function NormalizeTraitSource(Source)
 	return S
 end
 
-local function NextTraitSource(Res)
+local function NextTraitSource(Res, Exhausted)
 	for _, Raw in ipairs(Config.TraitSources or {}) do
 		local Source = NormalizeTraitSource(Raw)
-		if (tonumber(Res[Source]) or 0) > Config.TraitMinResources then
+		if not (Exhausted and Exhausted[Source])
+			and (tonumber(Res[Source]) or 0) > Config.TraitMinResources then
 			return Source
 		end
 	end
@@ -2007,13 +2010,16 @@ function Lobby.AutoRollTraits(UnitId)
 		return
 	end
 
-	if not NextTraitSource(TraitResources()) then
+	-- A roll that doesn't land just means this resource can't pay for the next
+	-- tier on this unit (remnants cost 1-5 depending on rarity, so 4 left can
+	-- still be too few). Fall through to the next source instead of stopping.
+	local Exhausted = {} -- source -> true once it failed / didn't replicate
+	if not NextTraitSource(TraitResources(), Exhausted) then
 		Log("no trait reroll resources for %s - will retry next lobby visit", Account.UnitName(UnitId))
 		return
 	end
 
-	-- no roll cap: keep going until Unique/kept trait lands, resources run out,
-	-- or a roll stops producing any change. Rolls is only a log counter.
+	-- no roll cap: keep going until Unique/kept trait lands or every source fails
 	local Rolls, GotUnique = 0, false
 	while true do
 		-- re-read live state before spending anything
@@ -2026,7 +2032,7 @@ function Lobby.AutoRollTraits(UnitId)
 		end
 
 		local Res = TraitResources()
-		local Source = NextTraitSource(Res)
+		local Source = NextTraitSource(Res, Exhausted)
 		if not Source then
 			break
 		end
@@ -2034,25 +2040,27 @@ function Lobby.AutoRollTraits(UnitId)
 		local BeforeSig = TraitSignature(Current)
 		local BeforeLeft = tonumber(Res[Source]) or 0
 		local Ok, Result = SpendTraitReroll(Source, Uuid)
-		if not (Ok and Result ~= false) then
-			Log("trait reroll via %s failed", Source)
-			break
+		local Landed = Ok and Result ~= false
+		if Landed then
+			-- a reroll only counts when the traits changed OR the resource
+			-- actually went down; otherwise it was refused by the server
+			local Changed = false
+			local Deadline = os.clock() + Config.TraitChangeTimeout
+			repeat
+				task.wait(0.1)
+				local Fresh = TraitCopy(UnitId)
+				local FreshList = Fresh and UnitTraitList(Fresh.Unit) or {}
+				local NowRes = TraitResources()
+				Changed = (TraitSignature(FreshList) ~= BeforeSig)
+					or ((tonumber(NowRes[Source]) or 0) < BeforeLeft)
+			until Changed or os.clock() >= Deadline
+			Landed = Changed
 		end
-
-		local Changed = false
-		local Deadline = os.clock() + Config.TraitChangeTimeout
-		repeat
-			task.wait(0.1)
-			local Fresh = TraitCopy(UnitId)
-			local FreshList = Fresh and UnitTraitList(Fresh.Unit) or {}
-			local NowRes = TraitResources()
-			Changed = (TraitSignature(FreshList) ~= BeforeSig)
-				or ((tonumber(NowRes[Source]) or 0) < BeforeLeft)
-		until Changed or os.clock() >= Deadline
-
-		if not Changed then
-			Log("trait roll %d: no change - stopping", Rolls + 1)
-			break
+		if not Landed then
+			Exhausted[Source] = true
+			Log("trait reroll via %s did not land (%d left) - trying next source",
+				Source, BeforeLeft)
+			continue -- move on to limited remnants / next configured source
 		end
 
 		Rolls += 1
@@ -2067,15 +2075,22 @@ function Lobby.AutoRollTraits(UnitId)
 	end
 
 	Copy = TraitCopy(UnitId) or Copy
-	State.TraitRoll[UnitId] = {
-		doneAt = os.time(),
+	Current = UnitTraitList(Copy.Unit)
+	Hit = KeptTrait(Current)
+	GotUnique = Hit and Hit.id == "unique" or false
+	local Record = {
 		gotUnique = GotUnique,
 		traits = TraitLabels(UnitTraitList(Copy.Unit)),
 		rolls = Rolls,
 	}
+	if Hit then
+		Record.doneAt = os.time() -- only stop future visits when it landed
+	end
+	State.TraitRoll[UnitId] = Record
 	SaveState()
-	Log("traits for %s: %s (%d roll(s), unique=%s)", Account.UnitName(UnitId),
-		table.concat(State.TraitRoll[UnitId].traits, ", "), Rolls, tostring(GotUnique))
+	Log("traits for %s: %s (%d roll(s), unique=%s%s)", Account.UnitName(UnitId),
+		table.concat(Record.traits, ", "), Rolls, tostring(GotUnique),
+		Hit and "" or " - will retry next lobby visit")
 end
 
 
@@ -2299,7 +2314,7 @@ function Lobby.HuntTarget()
 	return Account.UnitId(Config.CompassUnit)
 end
 
--- Hunting is gated to a specific minute of the hour (XX:00 by default).
+-- Hunting is gated to specific minutes of the hour (XX:00 and XX:30 by default).
 -- Server time is used when available so a wrong local clock cannot bypass it.
 local LastHuntTimeLog = 0
 local function HuntMinute()
@@ -2316,18 +2331,25 @@ local function HuntMinute()
 end
 
 local function HuntTimeOk()
-	if Config.HuntAtMinute == nil then
-		return true
+	local First, Second = Config.HuntAtMinute, Config.HuntAtMinute2
+	if First == nil and Second == nil then
+		return true -- both disabled = hunt any time
 	end
 	local Minute, Hour = HuntMinute()
-	if Minute ~= math.floor(Config.HuntAtMinute) then
-		if os.clock() - LastHuntTimeLog > 60 then
-			LastHuntTimeLog = os.clock()
-			LogT("Hunt", "waiting for :00 (server %02d:%02d)", Hour, Minute)
-		end
-		return false
+	local function Matches(Value)
+		return Value ~= nil and Minute == math.floor(Value)
 	end
-	return true
+	if Matches(First) or Matches(Second) then
+		return true
+	end
+	if os.clock() - LastHuntTimeLog > 60 then
+		LastHuntTimeLog = os.clock()
+		local Labels = {}
+		if First ~= nil then Labels[#Labels + 1] = (":%02d"):format(First) end
+		if Second ~= nil then Labels[#Labels + 1] = (":%02d"):format(Second) end
+		LogT("Hunt", "waiting for %s (server %02d:%02d)", table.concat(Labels, "/"), Hour, Minute)
+	end
+	return false
 end
 
 function Lobby.NeedHunt()
