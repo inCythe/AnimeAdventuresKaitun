@@ -2898,41 +2898,27 @@ local function LevelStats(UnitId, Level)
 	return Merged
 end
 
--- The game's own stat function is the source of truth: it folds level, IVs
--- (trait_stats potency/speed/range), relics and limit break into one multiplier
--- and reproduces the numbers on the unit card (e.g. range 22 * 1.2099 = 26.6).
-local function GameStatMultiplier(Unit, Level, Name)
-	if not UnitServiceCore or type(UnitServiceCore.calculate_static_stat_multiplier) ~= "function" then
-		return nil
-	end
-	local Ok, Value = pcall(UnitServiceCore.calculate_static_stat_multiplier,
-		Unit, Level, Name, Unit.trait_stats)
-	return Ok and tonumber(Value) or nil
-end
-
+-- Card-verified damage formula: the module damage is scaled linearly with the
+-- unit level, then multiplied by the potency IV. Live check: elyssia_evolved
+-- base 2800 at Lv95 -> ~29,206 on the card = 2800 * (1 + 94*0.1) * 1.1055.
+-- Level-1 units keep base damage; range/SPA come from the trait_stats IVs.
 local function ScoreUnit(Unit)
 	local Level = UnitLevelOf(Unit)
-	local Stats = LevelStats(Unit.unit_id, Level)
 	local Def = Units[Unit.unit_id] or {}
+	local Stats = LevelStats(Unit.unit_id, Level)
 	local Damage = tonumber(Stats.damage) or tonumber(Def.damage) or 0
 	local Cooldown = tonumber(Stats.attack_cooldown) or tonumber(Stats.cooldown)
 		or tonumber(Def.attack_cooldown) or 0
 
-	-- prefer the game's real multipliers; fall back to the manual math
-	local DamageMul = GameStatMultiplier(Unit, Level, "damage")
-	local SpeedMul = GameStatMultiplier(Unit, Level, "speed")
-	local RangeMul = GameStatMultiplier(Unit, Level, "range")
-	if not DamageMul then
-		local Potency, Speed, Range = TraitMultipliers(Unit)
-		DamageMul, SpeedMul, RangeMul = Potency, Speed, Range
-	end
-
-	local RealDamage = Damage * (DamageMul or 1)
-	local RealCooldown = Cooldown / (SpeedMul and SpeedMul > 0 and SpeedMul or 1)
+	local Potency, Speed, Range = TraitMultipliers(Unit)
+	local LevelScale = 1 + math.max(Level - 1, 0) * 0.1
+	local RealDamage = Damage * LevelScale * Potency
+	local RealCooldown = Cooldown / (Speed > 0 and Speed or 1)
 	local Dps = RealCooldown > 0 and (RealDamage / RealCooldown) or RealDamage
-	-- shiny is cosmetic only; stat_luck and rarity are not damage stats
-	local Score = Dps
-	Score += RealDamage * 0.000001 + (tonumber(Stats.range) or 0) * (RangeMul or 1) * 0.000001
+
+	-- shiny is cosmetic only; stat_luck and rarity are not damage stats.
+	-- range IV is only a tiny tie-breaker.
+	local Score = Dps + (tonumber(Stats.range) or 0) * Range * 0.000001
 	return Score
 end
 
