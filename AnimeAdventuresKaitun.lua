@@ -64,10 +64,12 @@ local CollectionService = game:GetService("CollectionService")
 local HttpService = game:GetService("HttpService")
 local Lighting = game:GetService("Lighting")
 local GroupService = game:GetService("GroupService")
+local AvatarEditorService = game:GetService("AvatarEditorService")
 local GuiService = game:GetService("GuiService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local GetHui = type(gethui) == "function" and gethui or nil
+local FireSignal = type(firesignal) == "function" and firesignal or nil
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
@@ -183,6 +185,7 @@ local Config = {
 	ForceCodes = false,          -- true = ignore the per-code level gates
 	GroupId = 10611639,
 	GroupName = "Gomu",
+	FavoriteCode = "CELESTIALCOMPASSU21",
 	GroupMaxAttempts = 3,
 	RedeemCodes = true,
 	Codes = {
@@ -1737,28 +1740,130 @@ local function JoinGroup()
 	return IsInGroup()
 end
 
-local function JoinGroupOnce()
+local function IsFavorited()
+	local Ok, Value = pcall(function()
+		return AvatarEditorService:GetFavorite(game.PlaceId, Enum.AvatarItemType.Asset)
+	end)
+	return Ok and Value == true
+end
+
+local function FindFavoriteButton()
+	for _, Root in ipairs(UiRoots()) do
+		local Ok, Button = pcall(function()
+			return Root.AvatarEditorPromptsApp.ThemeProvider.PromptFrame.Prompt.AlertContents.Footer.Buttons["2"]
+		end)
+		if Ok and Button then
+			return Button
+		end
+	end
+	return nil
+end
+
+-- The game only offers a favorite prompt from the in-world Code UI, so walk
+-- to _codes, submit FavoriteCode, then press the prompt button.
+local function FavoriteViaCode()
+	if IsFavorited() then
+		return true
+	end
+	LogT("Group", "favoriting through the Code UI")
+	local Character = Player.Character or Player.CharacterAdded:Wait()
+	local Root = Character:WaitForChild("HumanoidRootPart")
+	local CodesPart = workspace:FindFirstChild("_codes")
+	if CodesPart then
+		local Position
+		if CodesPart:IsA("BasePart") then
+			Position = CodesPart.Position
+		elseif CodesPart:IsA("Model") then
+			local Ok, Pivot = pcall(function()
+				return CodesPart:GetPivot()
+			end)
+			if Ok then
+				Position = Pivot.Position
+			end
+		end
+		if Position then
+			Root.CFrame = CFrame.new(Position + Vector3.new(0, 3, 0))
+		end
+	end
+	task.wait(1.5)
+
+	local CodesUi = PlayerGui:WaitForChild("Codes", 10)
+	local Window = CodesUi and CodesUi:WaitForChild("Window", 5)
+	if not Window then
+		return false
+	end
+	local UiDeadline = os.clock() + 5
+	while not Window.Visible and os.clock() < UiDeadline do
+		task.wait(0.1)
+	end
+
+	local EnterBox = Window.Enter:WaitForChild("Type")
+	EnterBox.Text = Config.FavoriteCode
+	task.wait(0.1)
+	if FireSignal then
+		pcall(function()
+			FireSignal(EnterBox.FocusLost, true)
+		end)
+	end
+	task.wait(0.5)
+
+	local YesButton = Window.ButtonHolder:WaitForChild("Yes")
+	local YesDeadline = os.clock() + 5
+	while os.clock() < YesDeadline do
+		if FindFavoriteButton() then
+			break
+		end
+		if not ButtonAlive(YesButton) or not Window.Parent or not Window.Visible then
+			break
+		end
+		PressButton(YesButton)
+		task.wait(0.1)
+	end
+	Unselect()
+
+	local Deadline = os.clock() + 15
+	while os.clock() < Deadline do
+		if IsFavorited() then
+			Unselect()
+			return true
+		end
+		local Button = FindFavoriteButton()
+		if Button then
+			SpamButton(Button, IsFavorited, 2)
+		else
+			task.wait(0.1)
+		end
+	end
+	Unselect()
+	return IsFavorited()
+end
+
+local function GroupAndFavorite()
 	if not Config.JoinGroup then
 		return
 	end
-	if IsInGroup() then
-		if not State.GroupDone then
-			State.GroupDone = true
-			SaveState()
-		end
+	if State.GroupDone then
 		return
 	end
-	if State.GroupDone or State.GroupAttempts >= Config.GroupMaxAttempts then
+	if State.GroupAttempts >= Config.GroupMaxAttempts then
 		return
 	end
 	State.GroupAttempts += 1
 	SaveState()
+
+	-- JoinGroup returns true immediately when we are already in the group.
 	local Joined = JoinGroup()
+	local Favorited = false
 	if Joined then
+		task.wait(1)
+		Favorited = FavoriteViaCode()
+	end
+	LogT("Group", "group %s, favorite %s",
+		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done")
+	if Joined and Favorited then
 		State.GroupDone = true
 		SaveState()
 	end
-	LogT("Group", "%s", Joined and "joined" or "not joined - will retry next lobby visit")
 end
 
 -- ============================================================================
@@ -3328,7 +3433,7 @@ function Lobby.Run()
 		UI.Lobby()
 	end
 
-	JoinGroupOnce() -- join once before claiming codes
+	GroupAndFavorite() -- join group + favorite game before claiming codes
 	Lobby.RedeemCodes()
 	Lobby.Compass()
 	Lobby.Claims()
