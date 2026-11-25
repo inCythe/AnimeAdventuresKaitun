@@ -3240,59 +3240,26 @@ function Lobby.Act6Stage()
 end
 
 -- returns Joined, AlreadyCleared
+-- returns Joined, AlreadyCleared
 function Lobby.JoinAct6()
 	local Stage, WorldId, Act = Lobby.Act6Stage()
 	if not Stage then
 		Log("no act 6 stage found")
 		return false, false
 	end
-	local Cleared = ClearedLevels()
-	if Cleared[Stage] then
+	if ClearedLevels()[Stage] then
 		Log("act 6 (%s) already cleared", Stage)
 		return false, true
 	end
-
-	-- first try the story skipper: jump acts 1-5, clear act 6 directly
 	State.Current = { Kind = "act6", LevelId = Stage }
 	SaveState()
 	UI.Set("Clearing act 6 (" .. tostring(WorldId) .. ", act " .. tostring(Act) .. ")")
 	local Ok = JoinSolo(Stage, "Normal", Config.SkipStory and WorldId or nil)
-	if Ok then
-		return true, false
+	if not Ok then
+		State.Current = nil
+		SaveState()
 	end
-
-	-- only if the world skip failed: play the first uncleared act with
-	-- Kind = "act6" => no vote-lose, leave after the clear. Each lobby visit
-	-- advances to the next uncleared act (acts 1-5, then the act 6 target),
-	-- so the world is cleared the normal way before Infinite is joined.
-	if Config.SkipStory then
-		local World = Worlds[WorldId]
-		local Count = 0
-		if type(World) == "table" and type(World.levels) == "table" then
-			for _ in pairs(World.levels) do
-				Count += 1
-			end
-		end
-		for Index = 1, Count do
-			local Id = StageOfWorld(WorldId, Index)
-			if Id and not Cleared[Id] then
-				Log("world skip failed - clearing uncleared act %d/%d (%s)", Index, Count, Id)
-				State.Current = { Kind = "act6", LevelId = Id }
-				SaveState()
-				UI.Set(("Clearing act %d (%s)"):format(Index, tostring(WorldId)))
-				local Joined = JoinSolo(Id, "Normal")
-				if not Joined then
-					State.Current = nil
-					SaveState()
-				end
-				return Joined, false
-			end
-		end
-	end
-
-	State.Current = nil
-	SaveState()
-	return false, false
+	return Ok, false
 end
 
 -- ============================================================================
