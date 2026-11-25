@@ -180,6 +180,7 @@ local Config = {
 	-- lobby chores -----------------------------------------------------------
 	-- join this group once per account, before redeeming codes
 	JoinGroup = true,
+	ForceCodes = false,          -- true = ignore the per-code level gates
 	GroupId = 10611639,
 	GroupName = "Gomu",
 	GroupMaxAttempts = 3,
@@ -317,6 +318,7 @@ end)
 local State = {
 	Summoned = false,   -- the one-time 10x was done
 	Compass = false,    -- the compass pick was used
+	RedeemedCodes = {}, -- backup ledger when profile.redeemed_codes lags
 	GroupDone = false,  -- group join confirmed once per account
 	GroupAttempts = 0,  -- lobby visits that tried the group dialog
 	Clear = {},         -- challenge mode -> uuid already handled
@@ -351,6 +353,9 @@ local function LoadState()
 	end
 	if type(State.TraitRoll) ~= "table" then
 		State.TraitRoll = {}
+	end
+	if type(State.RedeemedCodes) ~= "table" then
+		State.RedeemedCodes = {}
 	end
 	if type(State.GroupAttempts) ~= "number" then
 		State.GroupAttempts = 0
@@ -1762,52 +1767,90 @@ end
 local Lobby = {}
 local Match = {}
 
-function Lobby.RedeemCodes()
-	if not Config.RedeemCodes then
-		return
+-- codes the server ignored this session (never saved to disk)
+local CodeDead = {}
+
+-- redeemed_codes can be a LIST of strings or a MAP { CODE = true }, and it
+-- lags after a redeem. Read both shapes plus our saved backup ledger.
+local function RedeemedSet()
+	local Set = {}
+	local function Add(Code)
+		if Code ~= nil then
+			Set[tostring(Code):upper()] = true
+		end
 	end
-	local Level = Account.Level()
-	local Redeemed = {}
 	local Raw = Account.Profile().redeemed_codes
 	if type(Raw) == "table" then
 		for Code, Value in pairs(Raw) do
 			if type(Value) == "string" then
-				Redeemed[Value:upper()] = true
+				Add(Value) -- list form: { "CODE", ... }
 			elseif Value then
-				Redeemed[tostring(Code):upper()] = true
+				Add(Code) -- map form: { CODE = true }
 			end
 		end
 	end
+	for Code in pairs(State.RedeemedCodes or {}) do
+		Add(Code)
+	end
+	return Set
+end
 
-	local Now = 0
+local function WaitForRedeemed(Code, Timeout)
+	local Deadline = os.clock() + Timeout
+	repeat
+		if RedeemedSet()[Code] then
+			return true
+		end
+		task.wait(0.2)
+	until os.clock() >= Deadline
+	return false
+end
+
+function Lobby.RedeemCodes()
+	if not Config.RedeemCodes then
+		return
+	end
+	State.RedeemedCodes = State.RedeemedCodes or {}
+	local Level = Account.Level()
+	local Redeemed = RedeemedSet()
+	local Seen = {}
+	local Now, Locked = 0, 0
 	for _, Entry in ipairs(Config.Codes) do
-		local Code = tostring(Entry[1]):upper()
-		local MinLevel = tonumber(Entry[2])
-		if not Redeemed[Code] and (not MinLevel or Level >= MinLevel) then
-			local Ok, Reply = Util.Call(10, InvokeServer, "redeem_code", Code)
-			if not Ok then
-				Log("code %s failed: %s", Code, tostring(Reply))
-			elseif Reply == nil or Reply == true or Reply == "" then
-				local Deadline = os.clock() + 3
-				local Done = false
-				repeat
-					task.wait(0.2)
-					local Profile = Account.Profile().redeemed_codes
-					Done = type(Profile) == "table" and (Profile[Code] ~= nil or Profile[Code:lower()] ~= nil)
-				until Done or os.clock() >= Deadline
-				if Done then
-					Now += 1
-					Redeemed[Code] = true
-					Log("code %s redeemed", Code)
-				end
+		local Code = tostring(type(Entry) == "table" and Entry[1] or Entry):upper()
+		local MinLevel = type(Entry) == "table" and tonumber(Entry[2]) or nil
+		if not Seen[Code] and not Redeemed[Code] and not CodeDead[Code] then
+			Seen[Code] = true
+			if MinLevel and not Config.ForceCodes and Level < MinLevel then
+				Locked = Locked + 1
 			else
-				Log("code %s: %s", Code, tostring(Reply))
+				-- redeem_code answers nil/""/true for invalid AND already
+				-- redeemed, so only the profile/backup ledger decides
+				local Ok, Reply = Util.Call(10, InvokeServer, "redeem_code", Code)
+				if not Ok then
+					Log("code %s: request failed (%s)", Code, tostring(Reply))
+				elseif Reply == nil or Reply == "" or Reply == true then
+					if WaitForRedeemed(Code, 3) then
+						Redeemed[Code] = true
+						State.RedeemedCodes[Code] = true
+						SaveState()
+						Now += 1
+						Log("code %s redeemed", Code)
+					else
+						CodeDead[Code] = true
+						Log("code %s: rejected (invalid, expired or already redeemed)", Code)
+					end
+				else
+					Log("code %s: %s", Code, tostring(Reply))
+					if tostring(Reply) ~= "needs_social" then
+						CodeDead[Code] = true
+					end
+				end
+				task.wait(0.3)
 			end
-			task.wait(0.3)
 		end
 	end
-	if Now > 0 then
-		LogT("Codes", "%d redeemed", Now)
+	if Now > 0 or Locked > 0 then
+		LogT("Codes", "%d redeemed, %d waiting for a higher level (level %d)", Now, Locked, Level)
 	end
 end
 
