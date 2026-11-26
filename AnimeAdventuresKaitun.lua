@@ -182,13 +182,12 @@ local Config = {
 	EquipTeam = true,
 
 	-- lobby chores -----------------------------------------------------------
-	-- join this group once per account, before redeeming codes
+	-- group + favorite are retried while the social compass code is unredeemed
 	JoinGroup = true,
 	ForceCodes = false,          -- true = ignore the per-code level gates
 	GroupId = 10611639,
 	GroupName = "Gomu",
 	FavoriteCode = "CELESTIALCOMPASSU21",
-	GroupMaxAttempts = 3,
 	RedeemCodes = true,
 	Codes = {
 		{ "2MILLIONFAVES", 20 },
@@ -324,8 +323,6 @@ local State = {
 	Summoned = false,   -- the one-time 10x was done
 	Compass = false,    -- the compass pick was used
 	CompassDone = false, -- same flag, name used by the older hosted build
-	GroupDone = false,  -- group join confirmed once per account
-	GroupAttempts = 0,  -- lobby visits that tried the group dialog
 	Clear = {},         -- challenge mode -> uuid already handled
 	ChallengeSlot = 0,  -- the last 30-minute challenge slot the lobby handled
 	TraitRoll = {},     -- unit id -> { doneAt, gotUnique, traits, rolls }
@@ -358,9 +355,6 @@ local function LoadState()
 	end
 	if type(State.TraitRoll) ~= "table" then
 		State.TraitRoll = {}
-	end
-	if type(State.GroupAttempts) ~= "number" then
-		State.GroupAttempts = 0
 	end
 end
 
@@ -1837,32 +1831,46 @@ local function FavoriteViaCode()
 	return IsFavorited()
 end
 
-local function GroupAndFavorite()
-	if not Config.JoinGroup then
-		return
-	end
-	if State.GroupDone then
-		return
-	end
-	if State.GroupAttempts >= Config.GroupMaxAttempts then
-		return
-	end
-	State.GroupAttempts += 1
-	SaveState()
+-- codes the server ignored this session (never saved to disk)
+local CodeDead = {}
 
-	-- JoinGroup returns true immediately when we are already in the group.
+-- The social-gated compass code (CELESTIALCOMPASSU21) is the real proof that
+-- the group join + favorite actually registered on the account. Reading the
+-- game's own redeemed_codes (list or map form) avoids any saved-file ledger.
+local function CompassCodeRedeemed()
+	local Raw = Account.Profile().redeemed_codes
+	if type(Raw) == "table" then
+		for Key, Value in pairs(Raw) do
+			local Code = type(Value) == "string" and Value or Key
+			if tostring(Code):upper() == tostring(Config.FavoriteCode):upper() then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- The profile's redeemed_codes table is the only source of truth. If the
+-- social compass code is already there, nothing to do; otherwise retry the
+-- group join + favorite on this lobby visit. No saved-file flags involved.
+local function GroupAndFavorite()
+	if not Config.JoinGroup or CompassCodeRedeemed() then
+		return
+	end
+	-- invalid/expired code: retrying group + favorite cannot fix it
+	if CodeDead[tostring(Config.FavoriteCode):upper()] then
+		return
+	end
+
+	-- JoinGroup / FavoriteViaCode return true immediately when already done.
 	local Joined = JoinGroup()
 	local Favorited = false
 	if Joined then
 		task.wait(1)
 		Favorited = FavoriteViaCode()
 	end
-	LogT("Group", "group %s, favorite %s",
+	LogT("Group", "group %s, favorite %s (compass code not redeemed yet)",
 		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done")
-	if Joined and Favorited then
-		State.GroupDone = true
-		SaveState()
-	end
 end
 
 -- ============================================================================
@@ -1870,9 +1878,6 @@ end
 -- ============================================================================
 local Lobby = {}
 local Match = {}
-
--- codes the server ignored this session (never saved to disk)
-local CodeDead = {}
 
 -- redeemed_codes is the game's own ledger under session.profile_data: a LIST
 -- of strings or a MAP { CODE = true }. WaitForRedeemed polls it after each
