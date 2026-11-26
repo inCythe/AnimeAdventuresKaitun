@@ -934,9 +934,10 @@ function UI.Overlay()
 	}, Header)
 	local Sub = Label(Header, {
 		Position = UDim2.fromOffset(0, 130),
-		Size = UDim2.new(1, 0, 0, 20),
-		TextSize = 14,
-		TextColor3 = Theme.Muted,
+		Size = UDim2.new(1, 0, 0, 28),
+		Font = Enum.Font.GothamBold,
+		TextSize = 20,
+		TextColor3 = Theme.Text,
 		Text = "",
 	})
 
@@ -1063,6 +1064,7 @@ function UI.Overlay()
 	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
 	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
+	local ValueCompassUnit = AddCard(7, "Compass Unit", Icons.Compass)
 
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
@@ -1144,6 +1146,31 @@ function UI.Overlay()
 		end))
 	end
 
+	-- trait display for the compass unit, read from the live collection data
+	local function CompassTraitText()
+		local UnitId = Account.CompassUnit()
+		if not UnitId then
+			return "no compass unit"
+		end
+		for _, Unit in pairs(Account.Collection().owned_units or {}) do
+			if type(Unit) == "table" and Unit.unit_id == UnitId then
+				local Labels = {}
+				for _, T in pairs(type(Unit.traits) == "table" and Unit.traits or {}) do
+					if type(T) == "table" then
+						local Id = T.trait
+						local Info = type(Traits) == "table" and type(Traits.info) == "table"
+							and type(Id) == "string" and Traits.info[Id] or nil
+						local Name = type(Info) == "table" and Info.name or tostring(Id)
+						local Tier = tonumber(T.tier)
+						Labels[#Labels + 1] = Tier and ("%s %d"):format(tostring(Name), Tier) or tostring(Name)
+					end
+				end
+				return #Labels > 0 and table.concat(Labels, ", ") or "no trait"
+			end
+		end
+		return "unit not owned"
+	end
+
 	local function Refresh()
 		local Prof = Account.Profile()
 		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or nil
@@ -1186,6 +1213,11 @@ function UI.Overlay()
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
 		ValueLevel.Text = tostring(Level)
+		local CompassUnit = Account.CompassUnit()
+		ValueCompassUnit.Text = CompassUnit
+			and ("%s · %s"):format(Pretty(Account.UnitName(CompassUnit)), CompassTraitText())
+			or "no compass unit"
+		ValueCompassUnit.TextColor3 = CompassUnit and Theme.Good or Theme.Muted
 
 		-- bars
 		local Endgame = math.max(Config.TargetLevel, 1)
