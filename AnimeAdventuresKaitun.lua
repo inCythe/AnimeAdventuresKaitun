@@ -169,10 +169,12 @@ local Config = {
 	Summon10Once = true,          -- one 10x roll per account (saved to disk)
 	SummonBanner = "EventClover",
 	HuntFrom = 20000,             -- go hunting when gems reach this
-	HuntAtMinute = 0,             -- hunt at XX:00 (nil = ignore this slot)
-	HuntAtMinute2 = 30,           -- hunt at XX:30
-	HuntAtMinute3 = 15,           -- hunt at XX:15
-	HuntAtMinute4 = 45,           -- hunt at XX:45 (all nil = any time)
+	-- hunt window by default is minute 01-49 (XX:50 -> XX:00 is blocked).
+	-- setting any of these overrides the window with those exact minutes.
+	HuntAtMinute = nil,
+	HuntAtMinute2 = nil,
+	HuntAtMinute3 = nil,
+	HuntAtMinute4 = nil,
 	KeepGems = 0,                 -- never roll below this
 	MaxHuntRolls = 400,
 	CompassUnit = "elyssia",      -- the celestial compass pick (nil = skip)
@@ -1181,6 +1183,7 @@ function UI.Overlay()
 			Size = UDim2.new(1, -36, 0, 18),
 			BackgroundColor3 = Theme.Back,
 			BorderSizePixel = 0,
+			ZIndex = 1,
 		}, Bars)
 		Round(Track, 9)
 		New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Track)
@@ -1188,20 +1191,14 @@ function UI.Overlay()
 			Size = UDim2.new(0, 0, 1, 0),
 			BackgroundColor3 = ColorA,
 			BorderSizePixel = 0,
+			ZIndex = 2, -- above the Track background so it is actually visible
 		}, Track)
 		Round(Fill, 9)
-		local FillGlow = New("Frame", {
-			Size = UDim2.new(0, 0, 1, 0),
-			BackgroundColor3 = ColorB,
-			BackgroundTransparency = 0.45,
-			BorderSizePixel = 0,
-			ZIndex = 2,
-		}, Fill)
-		FillGlow.Size = UDim2.fromScale(1, 1)
 		return function(Fraction, Text)
 			Percent.Text = Text
 			local F = math.clamp(Fraction or 0, 0, 1)
-			Fill.Size = UDim2.fromScale(F, 1)
+			-- set width in absolute pixels so it works regardless of parent scale
+			Fill.Size = UDim2.new(F, 0, 1, 0)
 		end
 	end
 
@@ -2992,34 +2989,49 @@ local function HuntMinutes()
 	}
 end
 
+-- challenges reset every 15 minutes (:00/:15/:30/:45) regardless of the hunt
+-- window, so use fixed slots here rather than the hunt config.
 local function ResetMinuteOk()
 	local Minute = ServerMinute()
-	for _, Value in ipairs(HuntMinutes()) do
-		if Value and Minute == math.floor(Value) then
+	for _, Value in ipairs({ 0, 15, 30, 45 }) do
+		if Minute == Value then
 			return true
 		end
 	end
 	return false
 end
 
+-- Hunting is allowed from minute 01 through 50. The XX:51 -> XX:00 window
+-- is reserved (no hunting). Config slots work as an override: if any are set,
+-- only those exact minutes are used instead of the 1-50 window.
 local function HuntTimeOk()
 	local Slots = HuntMinutes()
 	local Any = false
 	for _, Value in ipairs(Slots) do
 		if Value ~= nil then Any = true end
 	end
-	if not Any then
-		return true -- all disabled = hunt any time
-	end
-	if ResetMinuteOk() then
-		return true
+	local Minute, Hour = ServerMinute()
+	if Any then
+		for _, Value in ipairs(Slots) do
+			if Value and Minute == math.floor(Value) then
+				return true
+			end
+		end
+	else
+		-- default window: minutes 1-50
+		if Minute >= 1 and Minute <= 50 then
+			return true
+		end
 	end
 	if os.clock() - LastHuntTimeLog > 60 then
 		LastHuntTimeLog = os.clock()
-		local Minute, Hour = ServerMinute()
 		local Labels = {}
-		for _, Value in ipairs(Slots) do
-			if Value ~= nil then Labels[#Labels + 1] = (":%02d"):format(Value) end
+		if Any then
+			for _, Value in ipairs(Slots) do
+				if Value ~= nil then Labels[#Labels + 1] = (":%02d"):format(Value) end
+			end
+		else
+			Labels[1] = "01-50"
 		end
 		LogT("Hunt", "waiting for %s (server %02d:%02d)", table.concat(Labels, "/"), Hour, Minute)
 	end
