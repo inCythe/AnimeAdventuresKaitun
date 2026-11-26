@@ -164,7 +164,6 @@ local Config = {
 	DailyChallengeLevel = 25,
 	DoChallenges = true,
 	DoInfinite = true,
-	ChallengeResetGrace = 20,     -- ignore resets inside this window after :00/:30
 
 	-- summoning / hunting ----------------------------------------------------
 	Summon10Once = true,          -- one 10x roll per account (saved to disk)
@@ -324,7 +323,6 @@ local State = {
 	Compass = false,    -- the compass pick was used
 	CompassDone = false, -- same flag, name used by the older hosted build
 	Clear = {},         -- challenge mode -> uuid already handled
-	ChallengeSlot = 0,  -- the last 30-minute challenge slot the lobby handled
 	TraitRoll = {},     -- unit id -> { doneAt, gotUnique, traits, rolls }
 	BlackScreen = true, -- the old overlay's persisted black-screen switch
 	Current = nil,      -- { Kind = "story"|"infinite"|"challenge", ... } for the match
@@ -2740,24 +2738,44 @@ function Lobby.SummonOnce()
 	end
 end
 
+-- True when the compass unit is owned, traits are not settled, and we still
+-- have a resource that can pay for a reroll. Used to block story/infinite/
+-- challenges until the roll is done.
+function Lobby.NeedTraitRoll()
+	if not Config.AutoTrait or not Config.CompassUnit then
+		return false
+	end
+	local UnitId = Account.UnitId(Config.CompassUnit)
+	if not UnitId or not Account.HasUnit(UnitId) then
+		return false
+	end
+	local Record = State.TraitRoll and State.TraitRoll[UnitId]
+	if Record and Record.doneAt then
+		return false
+	end
+	local Exhausted = {}
+	return NextTraitSource(TraitResources(), Exhausted, UnitId) ~= nil
+end
+
 function Lobby.HuntTarget()
 	return Account.UnitId(Config.CompassUnit)
 end
 
--- Hunting is gated to specific minutes of the hour (XX:00 and XX:30 by default).
--- Server time is used when available so a wrong local clock cannot bypass it.
+-- Exact time from the server clock (no grace window). Challenges reset at
+-- XX:00 and XX:30; hunting and challenge queueing share the same exact gate.
 local LastHuntTimeLog = 0
-local function HuntMinute()
-	local Now = os.time()
+local function ServerMinute()
 	local Ok, Server = pcall(function()
 		return workspace:GetServerTimeNow()
 	end)
-	if Ok and tonumber(Server) then
-		Now = Server
-	end
-	local Minute = math.floor(Now % 3600 / 60)
-	local Hour = math.floor(Now / 3600) % 24
-	return Minute, Hour
+	local Now = (Ok and tonumber(Server)) and Server or os.time()
+	return math.floor(Now % 3600 / 60), math.floor(Now / 3600) % 24
+end
+
+local function ResetMinuteOk()
+	local Minute = ServerMinute()
+	return Minute == (tonumber(Config.HuntAtMinute) or 0)
+		or Minute == (tonumber(Config.HuntAtMinute2) or 30)
 end
 
 local function HuntTimeOk()
@@ -2765,15 +2783,12 @@ local function HuntTimeOk()
 	if First == nil and Second == nil then
 		return true -- both disabled = hunt any time
 	end
-	local Minute, Hour = HuntMinute()
-	local function Matches(Value)
-		return Value ~= nil and Minute == math.floor(Value)
-	end
-	if Matches(First) or Matches(Second) then
+	if ResetMinuteOk() then
 		return true
 	end
 	if os.clock() - LastHuntTimeLog > 60 then
 		LastHuntTimeLog = os.clock()
+		local Minute, Hour = ServerMinute()
 		local Labels = {}
 		if First ~= nil then Labels[#Labels + 1] = (":%02d"):format(First) end
 		if Second ~= nil then Labels[#Labels + 1] = (":%02d"):format(Second) end
@@ -3495,17 +3510,13 @@ local function ChallengesEnabled()
 	return Config.DoChallenges == true
 end
 
--- challenges reset every :00 and :30. The slot flips a little after the
--- boundary so a reset is not detected while the server is still catching up.
+-- exact challenge slot from the server clock - no grace window
 function Lobby.Slot()
-	local Now = os.time()
 	local Ok, Server = pcall(function()
 		return workspace:GetServerTimeNow()
 	end)
-	if Ok and tonumber(Server) then
-		Now = Server
-	end
-	return math.floor((Now - (tonumber(Config.ChallengeResetGrace) or 0)) / 1800)
+	local Now = (Ok and tonumber(Server)) and Server or os.time()
+	return math.floor(Now / 1800)
 end
 
 function Lobby.JoinChallenge(Def, Uuid)
@@ -3578,22 +3589,24 @@ function Lobby.Plan()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
 
+	-- while hunting or trait rerolling, do nothing else at all
 	if Lobby.NeedHunt() then
 		if Lobby.Hunt() then
 			Lobby.EquipTeam()
 			Lobby.AutoSell()
+			if Lobby.NeedTraitRoll() then
+				Lobby.AutoRollTraits(Config.CompassUnit)
+			end
 		end
 		return "hunt"
 	end
+	if Lobby.NeedTraitRoll() then
+		Lobby.AutoRollTraits(Config.CompassUnit)
+		return "traits"
+	end
 
 	if ChallengesEnabled() then
-		local Slot = Lobby.Slot()
 		local Def, Uuid, Reachable = PickChallenge(Level)
-		if Reachable then
-			-- remember this reset was handled so the match can detect a new one
-			State.ChallengeSlot = Slot
-			SaveState()
-		end
 		if Def then
 			UI.Set("Joining " .. Def.Label)
 			return Lobby.JoinChallenge(Def, Uuid) and "queued" or "idle"
@@ -4994,17 +5007,21 @@ function Match.Decide()
 		return "leave"
 	end
 	if Lobby.NeedHunt() then
-		LogT("End", "hunt due -> leave")
+		LogT("End", "hunt due (:00/:30) -> leave")
+		return "leave"
+	end
+	if Lobby.NeedTraitRoll() then
+		LogT("End", "trait reroll pending -> leave")
 		return "leave"
 	end
 	if Current.Kind == "story" and Account.Level() >= Config.TargetLevel then
 		LogT("End", "target level reached -> leave")
 		return "leave"
 	end
-	-- a challenge reset (:00 / :30) happened while this match was running
-	if ChallengesEnabled() and Account.Level() >= Config.NormalChallengeLevel
-		and Lobby.Slot() > (State.ChallengeSlot or 0) then
-		LogT("End", "challenge reset -> leave")
+	-- exact challenge reset minute (:00 / :30): leave so the lobby can queue
+	if ResetMinuteOk() and ChallengesEnabled()
+		and Account.Level() >= Config.NormalChallengeLevel then
+		LogT("End", "challenge reset minute -> leave to queue")
 		return "leave"
 	end
 	Why("decide:replay", "match kind %s: nothing due - replaying loop", tostring(Current.Kind))
