@@ -1065,6 +1065,15 @@ function UI.Overlay()
 	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
 	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
+	local ValueChallenge = AddCard(7, "Challenge Reset", nil, "CR", Theme.Warn)
+
+	-- challenge clock from the game's own 30-minute slot (uuid = floor(now/1800))
+	local function ChallengeClock()
+		local Ok, Server = pcall(function() return workspace:GetServerTimeNow() end)
+		local Now = (Ok and tonumber(Server)) and Server or os.time()
+		local Remain = 1800 - (Now % 1800)
+		return ("%02d:%02d"):format(math.floor(Remain / 60), math.floor(Remain % 60))
+	end
 
 	-- full-width compass unit feature: live 3D model + big name + trait.
 	-- sibling row above the small-card grid so it can span both columns.
@@ -1299,6 +1308,8 @@ function UI.Overlay()
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
 		ValueLevel.Text = tostring(Level)
+		ValueChallenge.Text = ChallengeClock()
+		ValueChallenge.TextColor3 = ResetMinuteOk() and Theme.Good or Theme.Warn
 		-- full-width compass feature: only when the unit is actually owned
 		local CompassUnit = Account.CompassUnit()
 		local Owned = CompassUnit and Account.HasUnit(CompassUnit) or false
