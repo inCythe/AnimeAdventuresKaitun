@@ -1046,7 +1046,7 @@ function UI.Overlay()
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Text = Caption,
 		})
-		return Label(Card, {
+		local Value = Label(Card, {
 			AnchorPoint = Vector2.new(1, 0.5),
 			Position = UDim2.new(1, -14, 0.5, 0),
 			Size = UDim2.new(1, -190, 0, 24),
@@ -1056,6 +1056,7 @@ function UI.Overlay()
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Text = "-",
 		})
+		return Value, Card, IconBox
 	end
 
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
@@ -1064,7 +1065,23 @@ function UI.Overlay()
 	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
 	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
-	local ValueCompassUnit = AddCard(7, "Compass Unit", Icons.Compass)
+	local ValueCompassUnit, CompassCard, CompassIconBox = AddCard(7, "Compass Unit", Icons.Compass)
+
+	-- live 3D portrait: clone the unit model the game renders in the collection
+	-- GUI into a ViewportFrame so the compass unit's actual model is shown.
+	local CompassViewport = New("ViewportFrame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(40, 40),
+		BackgroundTransparency = 1,
+		Visible = false,
+	}, CompassIconBox)
+	Round(CompassViewport, 10)
+	local CompassCamera = New("Camera", {}, CompassViewport)
+	CompassViewport.CurrentCamera = CompassCamera
+	CompassCamera.CFrame = CFrame.new(0, 0, 6)
+	local CompassModelHolder = New("Model", { Name = "UnitModel" }, CompassViewport)
+	local CompassPortraitShown = false
 
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
@@ -1171,6 +1188,35 @@ function UI.Overlay()
 		return "unit not owned"
 	end
 
+	-- Find the live unit model the collection GUI rendered for a given unit
+	-- display name, so we can clone it into our own ViewportFrame.
+	local function FindCollectionModel(DisplayName)
+		local Gui = PlayerGui:FindFirstChild("collection")
+		if not Gui then
+			return nil
+		end
+		for _, Frame in ipairs(Gui:GetDescendants()) do
+			if Frame.Name == "CollectionUnitFrame" and Frame:IsA("Frame") then
+				for _, LabelObj in ipairs(Frame:GetDescendants()) do
+					if LabelObj:IsA("TextLabel") and LabelObj.Name == "name"
+						and LabelObj.Text == DisplayName then
+						local Main = Frame:FindFirstChild("Main")
+						local View = Main and Main:FindFirstChild("View")
+						local WorldModel = View and View:FindFirstChild("WorldModel")
+						if WorldModel then
+							for _, Child in ipairs(WorldModel:GetChildren()) do
+								if Child:IsA("Model") then
+									return Child
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		return nil
+	end
+
 	local function Refresh()
 		local Prof = Account.Profile()
 		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or nil
@@ -1218,6 +1264,28 @@ function UI.Overlay()
 			and ("%s · %s"):format(Pretty(Account.UnitName(CompassUnit)), CompassTraitText())
 			or "no compass unit"
 		ValueCompassUnit.TextColor3 = CompassUnit and Theme.Good or Theme.Muted
+
+		-- clone the real unit model from the collection GUI once per unit
+		local WantName = CompassUnit and Account.UnitName(CompassUnit) or nil
+		if WantName and not CompassPortraitShown then
+			local Source = FindCollectionModel(WantName)
+			if Source then
+				CompassModelHolder:ClearAllChildren()
+				local Clone = Source:Clone()
+				Clone.Parent = CompassModelHolder
+				-- frame the model with the viewport camera
+				local CFrameNow, Size = Clone:GetBoundingBox()
+				local Center = CFrameNow.Position
+				local Dist = math.max(Size.X, Size.Y, Size.Z, 2) * 2.2
+				CompassCamera.CFrame = CFrame.new(Center + Vector3.new(0, 0, Dist), Center)
+				CompassViewport.Visible = true
+				CompassPortraitShown = true
+			end
+		elseif not CompassUnit then
+			CompassViewport.Visible = false
+			CompassModelHolder:ClearAllChildren()
+			CompassPortraitShown = false
+		end
 
 		-- bars
 		local Endgame = math.max(Config.TargetLevel, 1)
