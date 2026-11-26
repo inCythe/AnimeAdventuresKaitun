@@ -3645,6 +3645,22 @@ function Lobby.WaitReady()
 end
 
 function Lobby.Run()
+	-- Cobalt-generated handshake: must be the first thing fired in the lobby,
+	-- before waiting for load or touching any other endpoint.
+	do
+		local Root = ReplicatedStorage:FindFirstChild("endpoints")
+		local Events = Root and Root:FindFirstChild("client_to_server")
+		local Event = Events and Events:FindFirstChild("ds_nt")
+		if Event and Event:IsA("RemoteFunction") then
+			local Ok, Err = pcall(function()
+				return Event:InvokeServer()
+			end)
+			if not Ok then
+				Log("ds_nt failed: %s", tostring(Err))
+			end
+		end
+	end
+
 	LogT("Lobby", "mode")
 	if not Lobby.WaitReady() then
 		warn("[AA Kaitun] lobby did not finish loading")
