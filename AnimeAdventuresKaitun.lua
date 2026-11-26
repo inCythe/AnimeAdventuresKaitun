@@ -1900,6 +1900,7 @@ end
 
 -- codes the server ignored this session (never saved to disk)
 local CodeDead = {}
+local LastSocialRetry = -60 -- os.clock() of last attempt; -60 makes the first call immediate
 
 -- The social-gated compass code (CELESTIALCOMPASSU21) is the real proof that
 -- the group join + favorite actually registered on the account. Reading the
@@ -1924,7 +1925,12 @@ local function GroupAndFavorite()
 	if not Config.JoinGroup or CompassCodeRedeemed() then
 		return
 	end
-	-- keep retrying every lobby visit until the profile shows the code redeemed
+	-- throttle attempts to once a minute; Lobby.Plan re-calls this every visit
+	-- until the profile shows the social code redeemed
+	if os.clock() - LastSocialRetry < 60 then
+		return
+	end
+	LastSocialRetry = os.clock()
 
 	-- JoinGroup / FavoriteViaCode return true immediately when already done.
 	local Joined = JoinGroup()
@@ -3702,9 +3708,12 @@ function Lobby.Plan()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
 
-	-- nothing else until the social compass code is redeemed: group/favorite
-	-- is retried every lobby visit by GroupAndFavorite(), so just wait here.
+	-- nothing else until the social compass code is redeemed. Re-run the
+	-- group/favorite retry (throttled to once a minute) each planning tick,
+	-- no story / infinite / challenges / hunt until the profile confirms it.
 	if Config.JoinGroup and not CompassCodeRedeemed() then
+		GroupAndFavorite()
+		Lobby.RedeemCodes() -- retry redeeming the code after social is done
 		return "social"
 	end
 
