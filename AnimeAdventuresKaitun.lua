@@ -170,7 +170,9 @@ local Config = {
 	SummonBanner = "EventClover",
 	HuntFrom = 20000,             -- go hunting when gems reach this
 	HuntAtMinute = 0,             -- hunt at XX:00 (nil = ignore this slot)
-	HuntAtMinute2 = 30,           -- also hunt at XX:30 (nil = only HuntAtMinute; both nil = any time)
+	HuntAtMinute2 = 30,           -- hunt at XX:30
+	HuntAtMinute3 = 15,           -- hunt at XX:15
+	HuntAtMinute4 = 45,           -- hunt at XX:45 (all nil = any time)
 	KeepGems = 0,                 -- never roll below this
 	MaxHuntRolls = 400,
 	CompassUnit = "elyssia",      -- the celestial compass pick (nil = skip)
@@ -286,6 +288,8 @@ if type(User) == "table" then
 	if Num(User.RollAtGems) then Config.HuntFrom = Num(User.RollAtGems) end
 	if Num(User.HuntAtMinute) then Config.HuntAtMinute = math.floor(Num(User.HuntAtMinute)) end
 	if Num(User.HuntAtMinute2) then Config.HuntAtMinute2 = math.floor(Num(User.HuntAtMinute2)) end
+	if Num(User.HuntAtMinute3) then Config.HuntAtMinute3 = math.floor(Num(User.HuntAtMinute3)) end
+	if Num(User.HuntAtMinute4) then Config.HuntAtMinute4 = math.floor(Num(User.HuntAtMinute4)) end
 	if Num(User.SaveGems) then Config.KeepGems = Num(User.SaveGems) end
 	if User.CompassUnit ~= nil then Config.CompassUnit = tostring(User.CompassUnit):lower() end
 	if type(User.Team) == "table" then Config.Team = User.Team end
@@ -1083,7 +1087,7 @@ function UI.Overlay()
 		BorderSizePixel = 0,
 	}, Content)
 	Round(Feature, 12)
-	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Feature)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1.5, Transparency = 0.3 }, Feature)
 
 	local CompassViewport = New("ViewportFrame", {
 		AnchorPoint = Vector2.new(0, 0.5),
@@ -1093,6 +1097,7 @@ function UI.Overlay()
 		Visible = false,
 	}, Feature)
 	Round(CompassViewport, 10)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.4 }, CompassViewport)
 	local CompassCamera = New("Camera", {}, CompassViewport)
 	CompassViewport.CurrentCamera = CompassCamera
 	CompassCamera.CFrame = CFrame.new(0, 0, 6)
@@ -1108,6 +1113,7 @@ function UI.Overlay()
 		ScaleType = Enum.ScaleType.Fit,
 	}, Feature)
 	Round(CompassFallback, 10)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.4 }, CompassFallback)
 
 	local CompassName = Label(Feature, {
 		AnchorPoint = Vector2.new(0, 0.5),
@@ -1171,24 +1177,31 @@ function UI.Overlay()
 			Text = "",
 		})
 		local Track = New("Frame", {
-			Position = UDim2.new(0, 18, 0, Y + 22),
-			Size = UDim2.new(1, -36, 0, 14),
+			Position = UDim2.new(0, 18, 0, Y + 24),
+			Size = UDim2.new(1, -36, 0, 18),
 			BackgroundColor3 = Theme.Back,
 			BorderSizePixel = 0,
 		}, Bars)
-		Round(Track, 6)
+		Round(Track, 9)
+		New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Track)
 		local Fill = New("Frame", {
-			Size = UDim2.fromScale(0, 1),
-			BackgroundColor3 = Color3.new(1, 1, 1),
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundColor3 = ColorA,
 			BorderSizePixel = 0,
 		}, Track)
-		Round(Fill, 6)
-		New("UIGradient", { Color = ColorSequence.new(ColorA, ColorB) }, Fill)
+		Round(Fill, 9)
+		local FillGlow = New("Frame", {
+			Size = UDim2.new(0, 0, 1, 0),
+			BackgroundColor3 = ColorB,
+			BackgroundTransparency = 0.45,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		}, Fill)
+		FillGlow.Size = UDim2.fromScale(1, 1)
 		return function(Fraction, Text)
 			Percent.Text = Text
-			TweenService:Create(Fill, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-				Size = UDim2.fromScale(math.clamp(Fraction, 0, 1), 1),
-			}):Play()
+			local F = math.clamp(Fraction or 0, 0, 1)
+			Fill.Size = UDim2.fromScale(F, 1)
 		end
 	end
 
@@ -2972,16 +2985,31 @@ local function ServerMinute()
 	return math.floor(Now % 3600 / 60), math.floor(Now / 3600) % 24
 end
 
+local function HuntMinutes()
+	return {
+		tonumber(Config.HuntAtMinute), tonumber(Config.HuntAtMinute2),
+		tonumber(Config.HuntAtMinute3), tonumber(Config.HuntAtMinute4),
+	}
+end
+
 local function ResetMinuteOk()
 	local Minute = ServerMinute()
-	return Minute == (tonumber(Config.HuntAtMinute) or 0)
-		or Minute == (tonumber(Config.HuntAtMinute2) or 30)
+	for _, Value in ipairs(HuntMinutes()) do
+		if Value and Minute == math.floor(Value) then
+			return true
+		end
+	end
+	return false
 end
 
 local function HuntTimeOk()
-	local First, Second = Config.HuntAtMinute, Config.HuntAtMinute2
-	if First == nil and Second == nil then
-		return true -- both disabled = hunt any time
+	local Slots = HuntMinutes()
+	local Any = false
+	for _, Value in ipairs(Slots) do
+		if Value ~= nil then Any = true end
+	end
+	if not Any then
+		return true -- all disabled = hunt any time
 	end
 	if ResetMinuteOk() then
 		return true
@@ -2990,8 +3018,9 @@ local function HuntTimeOk()
 		LastHuntTimeLog = os.clock()
 		local Minute, Hour = ServerMinute()
 		local Labels = {}
-		if First ~= nil then Labels[#Labels + 1] = (":%02d"):format(First) end
-		if Second ~= nil then Labels[#Labels + 1] = (":%02d"):format(Second) end
+		for _, Value in ipairs(Slots) do
+			if Value ~= nil then Labels[#Labels + 1] = (":%02d"):format(Value) end
+		end
 		LogT("Hunt", "waiting for %s (server %02d:%02d)", table.concat(Labels, "/"), Hour, Minute)
 	end
 	return false
