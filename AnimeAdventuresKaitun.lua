@@ -3645,8 +3645,13 @@ function Lobby.WaitReady()
 end
 
 function Lobby.Run()
-	-- Cobalt-generated handshake: must be the first thing fired in the lobby,
-	-- before waiting for load or touching any other endpoint.
+	LogT("Lobby", "mode")
+	if not Lobby.WaitReady() then
+		warn("[AA Kaitun] lobby did not finish loading")
+		return
+	end
+	-- Cobalt-generated handshake: fire as soon as the lobby is fully loaded,
+	-- before touching any other endpoint (settings, codes, group, etc).
 	do
 		local Root = ReplicatedStorage:FindFirstChild("endpoints")
 		local Events = Root and Root:FindFirstChild("client_to_server")
@@ -3659,12 +3664,6 @@ function Lobby.Run()
 				Log("ds_nt failed: %s", tostring(Err))
 			end
 		end
-	end
-
-	LogT("Lobby", "mode")
-	if not Lobby.WaitReady() then
-		warn("[AA Kaitun] lobby did not finish loading")
-		return
 	end
 	GameSettings.Ensure("Lobby") -- before the first summon so quick_summon applies
 	local LastSettings = os.clock()
