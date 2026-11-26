@@ -5250,8 +5250,9 @@ function Match.Decide()
 		LogT("End", "act 6 cleared -> leave")
 		return "leave"
 	end
-	if Lobby.NeedHunt() then
-		LogT("End", "hunt due (:00/:30) -> leave")
+	-- hunt window reached during the match (or still due now): leave to hunt
+	if Match.HuntSeen or Lobby.NeedHunt() then
+		LogT("End", "hunt window reached -> leave to lobby")
 		return "leave"
 	end
 	if Lobby.NeedTraitRoll() then
@@ -5262,10 +5263,12 @@ function Match.Decide()
 		LogT("End", "target level reached -> leave")
 		return "leave"
 	end
-	-- exact challenge reset minute (:00 / :30): leave so the lobby can queue
-	if ResetMinuteOk() and ChallengesEnabled()
-		and Account.Level() >= Config.NormalChallengeLevel then
-		LogT("End", "challenge reset minute -> leave to queue")
+	-- reset minute hit during this match, or the 30-min slot changed while
+	-- playing: leave at the end instead of replaying so the lobby can queue
+	-- the new challenges.
+	if ChallengesEnabled() and Account.Level() >= Config.NormalChallengeLevel
+		and (Match.ResetSeen or ResetMinuteOk() or Lobby.Slot() > (Match.StartSlot or 0)) then
+		LogT("End", "challenge reset reached during match -> leave to queue")
 		return "leave"
 	end
 	Why("decide:replay", "match kind %s: nothing due - replaying loop", tostring(Current.Kind))
@@ -5336,6 +5339,11 @@ function Match.Run()
 	local LoseVoted = false
 	local LastUi = 0
 	local WasActive = false
+	-- remember if a reset/hunt window was hit DURING this match, so Decide can
+	-- leave at the end even if the minute has already passed by then
+	Match.ResetSeen = false
+	Match.HuntSeen = false
+	Match.StartSlot = Lobby.Slot()
 
 	while true do
 		if os.clock() - LastSettings >= 15 then
@@ -5356,6 +5364,17 @@ function Match.Run()
 				Handled = false
 				LoseVoted = false
 				Match.Reset("new match")
+				Match.ResetSeen = false
+				Match.HuntSeen = false
+				Match.StartSlot = Lobby.Slot()
+			end
+			-- flag reset/hunt windows reached while this match is running;
+			-- Decide will leave instead of replaying once the game finishes
+			if ResetMinuteOk() then
+				Match.ResetSeen = true
+			end
+			if Lobby.NeedHunt() then
+				Match.HuntSeen = true
 			end
 			-- act 6 is a full clear and challenges must be completed: never
 			-- vote lose there. Check the game's own gamemode too, so a stale
