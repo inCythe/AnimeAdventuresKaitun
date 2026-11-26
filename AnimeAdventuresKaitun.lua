@@ -801,6 +801,7 @@ function UI.Overlay()
 		Accent2 = Color3.fromRGB(190, 120, 255),
 		Good = Color3.fromRGB(110, 230, 150),
 		Warn = Color3.fromRGB(255, 184, 90),
+		Bad = Color3.fromRGB(255, 96, 96),
 	}
 
 	local Icons = {
@@ -1066,10 +1067,10 @@ function UI.Overlay()
 
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
 	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
-	local ValueTokens = AddCard(3, "Reroll Tokens", Icons.Rerolls)
-	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
-	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
-	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
+	local ValueUnique = AddCard(3, "Unique", "rbxassetid://106165041836099")
+	local ValueTokens = AddCard(4, "Reroll Tokens", Icons.Rerolls)
+	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
+	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
 
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
@@ -1141,6 +1142,22 @@ function UI.Overlay()
 		return (Out:gsub("^,", ""))
 	end
 
+	-- Unique status for the compass unit: Not Started / No / Yes
+	local function UniqueStatus()
+		local UnitId = Account.CompassUnit()
+		if not UnitId then
+			return "Not Started", Theme.Muted
+		end
+		local Record = State.TraitRoll and State.TraitRoll[UnitId]
+		if not Record then
+			return "Not Started", Theme.Muted
+		end
+		if Record.gotUnique then
+			return "Yes", Theme.Good
+		end
+		return "No", Theme.Warn
+	end
+
 	-- "shadow_sorcerer" / "Shadow sorcerer" -> "Shadow Sorcerer"
 	local function Pretty(Id)
 		local Def = Units[Id]
@@ -1180,22 +1197,27 @@ function UI.Overlay()
 		Dot.BackgroundColor3 = Running and Theme.Good or Theme.Warn
 
 		-- cards
+		local CompassUnit = Account.CompassUnit()
+		local CompassOwned = CompassUnit and Account.HasUnit(CompassUnit) or false
+		local CompassColor = CompassOwned and Theme.Good or Theme.Bad
 		local CompassCount = tonumber(Items[Config.CompassId])
 		if State.Compass then
-			ValueCompass.Text = Pretty(Account.UnitName(Account.CompassUnit()))
-			ValueCompass.TextColor3 = Theme.Good
+			ValueCompass.Text = Pretty(Account.UnitName(CompassUnit))
+			ValueCompass.TextColor3 = CompassColor
 		elseif CompassCount and CompassCount > 0 then
 			ValueCompass.Text = ("x%d ready"):format(CompassCount)
-			ValueCompass.TextColor3 = Theme.Warn
+			ValueCompass.TextColor3 = CompassColor
 		else
 			ValueCompass.Text = "Not used"
-			ValueCompass.TextColor3 = Theme.Text
+			ValueCompass.TextColor3 = CompassColor
 		end
 		ValueGems.Text = Fmt(Gems)
 		ValueTokens.Text = Fmt(Prof.trait_reroll_tokens)
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
-		ValueLevel.Text = tostring(Level)
+		local UniqueText, UniqueColor = UniqueStatus()
+		ValueUnique.Text = UniqueText
+		ValueUnique.TextColor3 = UniqueColor
 
 		-- bars
 		local Endgame = math.max(Config.TargetLevel, 1)
@@ -1902,10 +1924,7 @@ local function GroupAndFavorite()
 	if not Config.JoinGroup or CompassCodeRedeemed() then
 		return
 	end
-	-- invalid/expired code: retrying group + favorite cannot fix it
-	if CodeDead[tostring(Config.FavoriteCode):upper()] then
-		return
-	end
+	-- keep retrying every lobby visit until the profile shows the code redeemed
 
 	-- JoinGroup / FavoriteViaCode return true immediately when already done.
 	local Joined = JoinGroup()
@@ -1969,7 +1988,9 @@ function Lobby.RedeemCodes()
 	for _, Entry in ipairs(Config.Codes) do
 		local Code = tostring(type(Entry) == "table" and Entry[1] or Entry):upper()
 		local MinLevel = type(Entry) == "table" and tonumber(Entry[2]) or nil
-		if not Seen[Code] and not Redeemed[Code] and not CodeDead[Code] then
+		-- always keep retrying the social compass code until the profile shows it
+		local IsSocial = Code == tostring(Config.FavoriteCode):upper()
+		if not Seen[Code] and not Redeemed[Code] and (IsSocial or not CodeDead[Code]) then
 			Seen[Code] = true
 			if MinLevel and not Config.ForceCodes and Level < MinLevel then
 				Locked = Locked + 1
@@ -1985,12 +2006,12 @@ function Lobby.RedeemCodes()
 						Now += 1
 						Log("code %s redeemed", Code)
 					else
-						CodeDead[Code] = true
+						if not IsSocial then CodeDead[Code] = true end
 						Log("code %s: rejected (invalid, expired or already redeemed)", Code)
 					end
 				else
 					Log("code %s: %s", Code, tostring(Reply))
-					if tostring(Reply) ~= "needs_social" then
+					if tostring(Reply) ~= "needs_social" and not IsSocial then
 						CodeDead[Code] = true
 					end
 				end
@@ -3680,6 +3701,12 @@ function Lobby.Plan()
 	local Level = Account.Level()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
+
+	-- nothing else until the social compass code is redeemed: group/favorite
+	-- is retried every lobby visit by GroupAndFavorite(), so just wait here.
+	if Config.JoinGroup and not CompassCodeRedeemed() then
+		return "social"
+	end
 
 	-- while hunting or trait rerolling, do nothing else at all
 	if Lobby.NeedHunt() then
