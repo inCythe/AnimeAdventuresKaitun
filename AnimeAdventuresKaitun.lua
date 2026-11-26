@@ -1040,8 +1040,8 @@ function UI.Overlay()
 		Label(Card, {
 			AnchorPoint = Vector2.new(0, 0.5),
 			Position = UDim2.new(0, 60, 0.5, 0),
-			Size = UDim2.new(0, 120, 0, 20),
-			TextSize = 13,
+			Size = UDim2.new(0, 120, 0, 22),
+			TextSize = 15,
 			TextColor3 = Theme.Muted,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Text = Caption,
@@ -1049,9 +1049,9 @@ function UI.Overlay()
 		local Value = Label(Card, {
 			AnchorPoint = Vector2.new(1, 0.5),
 			Position = UDim2.new(1, -14, 0.5, 0),
-			Size = UDim2.new(1, -190, 0, 24),
+			Size = UDim2.new(1, -190, 0, 26),
 			Font = Enum.Font.GothamBold,
-			TextSize = 17,
+			TextSize = 20,
 			TextXAlignment = Enum.TextXAlignment.Right,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Text = "-",
@@ -1060,12 +1060,11 @@ function UI.Overlay()
 	end
 
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
-	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
-	local ValueTokens = AddCard(3, "Reroll Tokens", Icons.Rerolls)
-	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
-	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
-	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
-	local ValueChallenge = AddCard(7, "Challenge Reset", nil, "CR", Theme.Warn)
+	local ValueTokens = AddCard(2, "Reroll Tokens", Icons.Rerolls)
+	local ValueRemnants = AddCard(3, "Star Remnants", Icons.Remnants)
+	local ValueLimited = AddCard(4, "Limited Remnants", Icons.Remnants)
+	local ValueLevel = AddCard(5, "Level", nil, "LV", Theme.Accent)
+	local ValueChallenge = AddCard(6, "Challenge Reset", nil, "CR", Theme.Warn)
 
 	-- challenge clock from the game's own 30-minute slot (uuid = floor(now/1800))
 	local function ChallengeClock()
@@ -1079,7 +1078,7 @@ function UI.Overlay()
 	-- sibling row above the small-card grid so it can span both columns.
 	local Feature = New("Frame", {
 		LayoutOrder = 3,
-		Size = UDim2.new(1, 0, 0, 104),
+		Size = UDim2.new(1, 0, 0, 78),
 		BackgroundColor3 = Theme.Card,
 		BorderSizePixel = 0,
 	}, Content)
@@ -1089,7 +1088,7 @@ function UI.Overlay()
 	local CompassViewport = New("ViewportFrame", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 10, 0.5, 0),
-		Size = UDim2.fromOffset(88, 88),
+		Size = UDim2.fromOffset(60, 60),
 		BackgroundTransparency = 1,
 		Visible = false,
 	}, Feature)
@@ -1103,7 +1102,7 @@ function UI.Overlay()
 	local CompassFallback = New("ImageLabel", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 10, 0.5, 0),
-		Size = UDim2.fromOffset(88, 88),
+		Size = UDim2.fromOffset(60, 60),
 		BackgroundTransparency = 1,
 		Image = Icons.Compass,
 		ScaleType = Enum.ScaleType.Fit,
@@ -1112,23 +1111,33 @@ function UI.Overlay()
 
 	local CompassName = Label(Feature, {
 		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 112, 0.5, -10),
-		Size = UDim2.new(1, -130, 0, 30),
+		Position = UDim2.new(0, 80, 0.5, -9),
+		Size = UDim2.new(1, -95, 0, 24),
 		Font = Enum.Font.GothamBold,
-		TextSize = 22,
+		TextSize = 18,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Text = "Compass Unit",
 	})
 	local CompassTrait = Label(Feature, {
 		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 112, 0.5, 16),
-		Size = UDim2.new(1, -130, 0, 22),
+		Position = UDim2.new(0, 80, 0.5, 13),
+		Size = UDim2.new(1, -95, 0, 20),
 		Font = Enum.Font.GothamMedium,
-		TextSize = 16,
+		TextSize = 14,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		TextColor3 = Theme.Warn,
+		Text = "",
+	})
+	local CompassStatus = Label(Feature, {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.new(0, 120, 0, 20),
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Text = "",
 	})
 
@@ -1187,7 +1196,7 @@ function UI.Overlay()
 	local SetGemBar = AddBar(66, "Gems to hunt", Color3.fromRGB(70, 200, 150), Theme.Good)
 
 	Label(Content, {
-		LayoutOrder = 5,
+		LayoutOrder = 6,
 		Size = UDim2.new(1, 0, 0, 16),
 		TextSize = 12,
 		TextColor3 = Theme.Muted,
@@ -1294,14 +1303,14 @@ function UI.Overlay()
 		-- cards
 		local CompassCount = tonumber(Items[Config.CompassId])
 		if State.Compass then
-			ValueCompass.Text = Pretty(Account.UnitName(Account.CompassUnit()))
-			ValueCompass.TextColor3 = Theme.Good
+			CompassStatus.Text = "Compass used"
+			CompassStatus.TextColor3 = Theme.Good
 		elseif CompassCount and CompassCount > 0 then
-			ValueCompass.Text = ("x%d ready"):format(CompassCount)
-			ValueCompass.TextColor3 = Theme.Warn
+			CompassStatus.Text = ("x%d ready"):format(CompassCount)
+			CompassStatus.TextColor3 = Theme.Warn
 		else
-			ValueCompass.Text = "Not used"
-			ValueCompass.TextColor3 = Theme.Text
+			CompassStatus.Text = "Not used"
+			CompassStatus.TextColor3 = Theme.Text
 		end
 		ValueGems.Text = Fmt(Gems)
 		ValueTokens.Text = Fmt(Prof.trait_reroll_tokens)
