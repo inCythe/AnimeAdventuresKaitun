@@ -249,6 +249,33 @@ local Config = {
 	TraitChangeTimeout = 5,
 }
 
+-- Normalize the AutoTrait toggle. getgenv can be changed mid-session, and
+-- values may arrive as booleans, numbers or strings - treat anything other
+-- than true/1/"true" as OFF so setting false actually stops the rolls.
+local function AutoTraitValue(Value)
+	if type(Value) == "boolean" then
+		return Value
+	end
+	if type(Value) == "number" then
+		return Value ~= 0
+	end
+	if type(Value) == "string" then
+		local S = Value:lower()
+		return S == "true" or S == "1" or S == "yes"
+	end
+	return false
+end
+
+-- Live toggle: read getgenv on every check so a mid-session change takes
+-- effect immediately (the baked-in BootCode config only applies on teleport).
+local function AutoTraitEnabled()
+	local Live = Env.Kaitun
+	if type(Live) == "table" and Live.AutoTrait ~= nil then
+		return AutoTraitValue(Live.AutoTrait)
+	end
+	return Config.AutoTrait == true
+end
+
 -- getgenv().Kaitun overrides (same names people already use) ------------------
 local User = Env.Kaitun
 if type(User) == "table" then
@@ -277,7 +304,7 @@ if type(User) == "table" then
 	if User.SkipCutscenes ~= nil then Config.SkipCutscenes = User.SkipCutscenes and true or false end
 	if User.Summon ~= nil then Config.Summon10Once = User.Summon and true or false end
 	if Num(User.LoseWave) then Config.LoseWave = math.floor(Num(User.LoseWave)) end
-	if User.AutoTrait ~= nil then Config.AutoTrait = User.AutoTrait and true or false end
+	if User.AutoTrait ~= nil then Config.AutoTrait = AutoTraitValue(User.AutoTrait) end
 	if type(User.TraitKeep) == "table" then Config.TraitKeep = User.TraitKeep end
 	if type(User.TraitSources) == "table" then Config.TraitSources = User.TraitSources end
 	if Num(User.TraitMinResources) then Config.TraitMinResources = math.floor(Num(User.TraitMinResources)) end
@@ -2360,7 +2387,7 @@ local function SpendTraitReroll(Source, Uuid)
 end
 
 function Lobby.AutoRollTraits(UnitId)
-	if not Config.AutoTrait or not UnitId then
+	if not AutoTraitEnabled() or not UnitId then
 		return
 	end
 	UnitId = Account.UnitId(UnitId)
@@ -2754,7 +2781,7 @@ end
 -- have a resource that can pay for a reroll. Used to block story/infinite/
 -- challenges until the roll is done.
 function Lobby.NeedTraitRoll()
-	if not Config.AutoTrait then
+	if not AutoTraitEnabled() then
 		return false
 	end
 	local UnitId = Account.CompassUnit()
