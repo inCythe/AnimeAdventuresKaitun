@@ -237,8 +237,8 @@ local Config = {
 	ChallengesOnlyAfterCompass = false, -- once the compass unit is owned, stop
 	                             -- joining story/infinite (challenges still run)
 	MatchmakingRetries = 4,
-	MatchmakingCooldown = 21,
-	QueueTimeout = 180,
+	MatchmakingCooldown = 20,   -- wait after a timed-out queue before requeueing
+	QueueTimeout = 300,         -- leave the queue after 5 minutes still unjoined
 
 	-- auto trait reroll (compass unit; Unique is always kept) ----------------
 	AutoTrait = true,
@@ -3538,14 +3538,25 @@ function Lobby.JoinChallenge(Def, Uuid)
 	for Attempt = 1, Config.MatchmakingRetries do
 		Log("queueing %s (%d/%d)", Def.Label, Attempt, Config.MatchmakingRetries)
 		Util.Invoke("request_matchmaking", Def.LevelId)
-		local Deadline = os.clock() + 4
+		local QueueStart = os.clock()
 		repeat
 			if Lobby.QueueMap() == Def.Map then
 				Log("queued for %s", Def.Label)
 				return true
 			end
+			-- if we dropped out of the queue on our own, stop waiting
+			if not Lobby.Queued() then
+				break
+			end
 			task.wait(0.2)
-		until os.clock() >= Deadline
+		until os.clock() - QueueStart >= Config.QueueTimeout
+
+		-- 5 minutes elapsed without joining: explicitly leave, then wait 20s
+		if Lobby.Queued() then
+			Log("queue timed out after %ds - leaving matchmaking", Config.QueueTimeout)
+			Util.Invoke("leave_matchmaking")
+			task.wait(0.5)
+		end
 		if Attempt < Config.MatchmakingRetries then
 			task.wait(Config.MatchmakingCooldown)
 		end
@@ -3649,8 +3660,9 @@ function Lobby.Wait()
 	while Loader.IsLobby do
 		if Lobby.Queued() then
 			if os.clock() - Started > Config.QueueTimeout then
-				Log("queue timed out - leaving matchmaking")
+				Log("queue timed out after %ds - leaving matchmaking", Config.QueueTimeout)
 				Util.Invoke("leave_matchmaking")
+				task.wait(Config.MatchmakingCooldown)
 				return
 			end
 		elseif os.clock() - Started > 60 then
