@@ -985,7 +985,7 @@ function UI.Overlay()
 
 	-- stat cards ---------------------------------------------------------------
 	local Panel = New("Frame", {
-		LayoutOrder = 4,
+		LayoutOrder = 3,
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundColor3 = Theme.Panel,
@@ -1052,7 +1052,7 @@ function UI.Overlay()
 			TextXAlignment = Enum.TextXAlignment.Left,
 			Text = Caption,
 		})
-		local Value = Label(Card, {
+		return Label(Card, {
 			AnchorPoint = Vector2.new(1, 0.5),
 			Position = UDim2.new(1, -14, 0.5, 0),
 			Size = UDim2.new(1, -190, 0, 26),
@@ -1062,96 +1062,18 @@ function UI.Overlay()
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Text = "-",
 		})
-		return Value, Card, IconBox
 	end
 
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
-	local ValueTokens = AddCard(2, "Reroll Tokens", Icons.Rerolls)
-	local ValueRemnants = AddCard(3, "Star Remnants", Icons.Remnants)
-	local ValueLimited = AddCard(4, "Limited Remnants", Icons.Remnants)
-	local ValueLevel = AddCard(5, "Level", nil, "LV", Theme.Accent)
-	local ValueChallenge = AddCard(6, "Challenge Reset", nil, "CR", Theme.Warn)
-
-	-- challenge clock from the game's own 30-minute slot (uuid = floor(now/1800))
-	local function ChallengeClock()
-		local Ok, Server = pcall(function() return workspace:GetServerTimeNow() end)
-		local Now = (Ok and tonumber(Server)) and Server or os.time()
-		local Remain = 1800 - (Now % 1800)
-		return ("%02d:%02d"):format(math.floor(Remain / 60), math.floor(Remain % 60))
-	end
-
-	-- full-width compass unit feature: live 3D model + big name + trait.
-	-- sibling row above the small-card grid so it can span both columns.
-	local Feature = New("Frame", {
-		LayoutOrder = 3,
-		Size = UDim2.new(1, 0, 0, 78),
-		BackgroundColor3 = Theme.Card,
-		BorderSizePixel = 0,
-	}, Content)
-	Round(Feature, 12)
-	New("UIStroke", { Color = Theme.Stroke, Thickness = 1.5, Transparency = 0.3 }, Feature)
-
-	local CompassViewport = New("ViewportFrame", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 10, 0.5, 0),
-		Size = UDim2.fromOffset(60, 60),
-		BackgroundTransparency = 1,
-		Visible = false,
-	}, Feature)
-	Round(CompassViewport, 10)
-	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.4 }, CompassViewport)
-	local CompassCamera = New("Camera", {}, CompassViewport)
-	CompassViewport.CurrentCamera = CompassCamera
-	CompassCamera.CFrame = CFrame.new(0, 0, 6)
-	local CompassModelHolder = New("Model", { Name = "UnitModel" }, CompassViewport)
-	local CompassPortraitShown = false
-
-	local CompassFallback = New("ImageLabel", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 10, 0.5, 0),
-		Size = UDim2.fromOffset(60, 60),
-		BackgroundTransparency = 1,
-		Image = Icons.Compass,
-		ScaleType = Enum.ScaleType.Fit,
-	}, Feature)
-	Round(CompassFallback, 10)
-	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.4 }, CompassFallback)
-
-	local CompassName = Label(Feature, {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 80, 0.5, -9),
-		Size = UDim2.new(1, -95, 0, 24),
-		Font = Enum.Font.GothamBold,
-		TextSize = 18,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Text = "Compass Unit",
-	})
-	local CompassTrait = Label(Feature, {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 80, 0.5, 13),
-		Size = UDim2.new(1, -95, 0, 20),
-		Font = Enum.Font.GothamMedium,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		TextColor3 = Theme.Warn,
-		Text = "",
-	})
-	local CompassStatus = Label(Feature, {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.new(0, 120, 0, 20),
-		Font = Enum.Font.GothamMedium,
-		TextSize = 12,
-		TextXAlignment = Enum.TextXAlignment.Right,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Text = "",
-	})
+	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
+	local ValueTokens = AddCard(3, "Reroll Tokens", Icons.Rerolls)
+	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
+	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
+	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
 
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
-		LayoutOrder = 5,
+		LayoutOrder = 4,
 		Size = UDim2.new(1, 0, 0, 118),
 		BackgroundColor3 = Theme.Panel,
 		BackgroundTransparency = 0.1,
@@ -1179,26 +1101,24 @@ function UI.Overlay()
 			Text = "",
 		})
 		local Track = New("Frame", {
-			Position = UDim2.new(0, 18, 0, Y + 24),
-			Size = UDim2.new(1, -36, 0, 18),
+			Position = UDim2.new(0, 18, 0, Y + 22),
+			Size = UDim2.new(1, -36, 0, 14),
 			BackgroundColor3 = Theme.Back,
 			BorderSizePixel = 0,
-			ZIndex = 1,
 		}, Bars)
-		Round(Track, 9)
-		New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Track)
+		Round(Track, 6)
 		local Fill = New("Frame", {
-			Size = UDim2.new(0, 0, 1, 0),
-			BackgroundColor3 = ColorA,
+			Size = UDim2.fromScale(0, 1),
+			BackgroundColor3 = Color3.new(1, 1, 1),
 			BorderSizePixel = 0,
-			ZIndex = 2, -- above the Track background so it is actually visible
 		}, Track)
-		Round(Fill, 9)
+		Round(Fill, 6)
+		New("UIGradient", { Color = ColorSequence.new(ColorA, ColorB) }, Fill)
 		return function(Fraction, Text)
 			Percent.Text = Text
-			local F = math.clamp(Fraction or 0, 0, 1)
-			-- set width in absolute pixels so it works regardless of parent scale
-			Fill.Size = UDim2.new(F, 0, 1, 0)
+			TweenService:Create(Fill, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Size = UDim2.fromScale(math.clamp(Fraction, 0, 1), 1),
+			}):Play()
 		end
 	end
 
@@ -1206,7 +1126,7 @@ function UI.Overlay()
 	local SetGemBar = AddBar(66, "Gems to hunt", Color3.fromRGB(70, 200, 150), Theme.Good)
 
 	Label(Content, {
-		LayoutOrder = 6,
+		LayoutOrder = 5,
 		Size = UDim2.new(1, 0, 0, 16),
 		TextSize = 12,
 		TextColor3 = Theme.Muted,
@@ -1231,60 +1151,6 @@ function UI.Overlay()
 		end))
 	end
 
-	-- trait display for the compass unit, read from the live collection data
-	local function CompassTraitText()
-		local UnitId = Account.CompassUnit()
-		if not UnitId then
-			return "no compass unit"
-		end
-		for _, Unit in pairs(Account.Collection().owned_units or {}) do
-			if type(Unit) == "table" and Unit.unit_id == UnitId then
-				local Labels = {}
-				for _, T in pairs(type(Unit.traits) == "table" and Unit.traits or {}) do
-					if type(T) == "table" then
-						local Id = T.trait
-						local Info = type(Traits) == "table" and type(Traits.info) == "table"
-							and type(Id) == "string" and Traits.info[Id] or nil
-						local Name = type(Info) == "table" and Info.name or tostring(Id)
-						local Tier = tonumber(T.tier)
-						Labels[#Labels + 1] = Tier and ("%s %d"):format(tostring(Name), Tier) or tostring(Name)
-					end
-				end
-				return #Labels > 0 and table.concat(Labels, ", ") or "no trait"
-			end
-		end
-		return "unit not owned"
-	end
-
-	-- Find the live unit model the collection GUI rendered for a given unit
-	-- display name, so we can clone it into our own ViewportFrame.
-	local function FindCollectionModel(DisplayName)
-		local Gui = PlayerGui:FindFirstChild("collection")
-		if not Gui then
-			return nil
-		end
-		for _, Frame in ipairs(Gui:GetDescendants()) do
-			if Frame.Name == "CollectionUnitFrame" and Frame:IsA("Frame") then
-				for _, LabelObj in ipairs(Frame:GetDescendants()) do
-					if LabelObj:IsA("TextLabel") and LabelObj.Name == "name"
-						and LabelObj.Text == DisplayName then
-						local Main = Frame:FindFirstChild("Main")
-						local View = Main and Main:FindFirstChild("View")
-						local WorldModel = View and View:FindFirstChild("WorldModel")
-						if WorldModel then
-							for _, Child in ipairs(WorldModel:GetChildren()) do
-								if Child:IsA("Model") then
-									return Child
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-		return nil
-	end
-
 	local function Refresh()
 		local Prof = Account.Profile()
 		local Items = type(Prof.inventory) == "table" and Prof.inventory.normal_items or nil
@@ -1295,8 +1161,11 @@ function UI.Overlay()
 		local Gems = Account.Gems()
 		local Up = math.floor(tick() - StartedAt)
 
-		-- header + pill
-		Sub.Text = ("%s   ·   %02d:%02d:%02d"):format(Player.Name, math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60)
+		-- header + pill (challenge countdown lives in the header time)
+		local ChallengeRemain = 1800 - (os.time() % 1800)
+		Sub.Text = ("%s   ·   %02d:%02d:%02d   ·   challenges %02d:%02d"):format(
+			Player.Name, math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60,
+			math.floor(ChallengeRemain / 60), math.floor(ChallengeRemain % 60))
 		local Running = Config.Enabled ~= false
 		local Parts = { Running and "RUNNING" or "PAUSED", Loader.IsLobby and "Lobby" or "Match" }
 		local WaveValue = workspace:FindFirstChild("_wave_num")
@@ -1313,50 +1182,20 @@ function UI.Overlay()
 		-- cards
 		local CompassCount = tonumber(Items[Config.CompassId])
 		if State.Compass then
-			CompassStatus.Text = "Compass used"
-			CompassStatus.TextColor3 = Theme.Good
+			ValueCompass.Text = Pretty(Account.UnitName(Account.CompassUnit()))
+			ValueCompass.TextColor3 = Theme.Good
 		elseif CompassCount and CompassCount > 0 then
-			CompassStatus.Text = ("x%d ready"):format(CompassCount)
-			CompassStatus.TextColor3 = Theme.Warn
+			ValueCompass.Text = ("x%d ready"):format(CompassCount)
+			ValueCompass.TextColor3 = Theme.Warn
 		else
-			CompassStatus.Text = "Not used"
-			CompassStatus.TextColor3 = Theme.Text
+			ValueCompass.Text = "Not used"
+			ValueCompass.TextColor3 = Theme.Text
 		end
 		ValueGems.Text = Fmt(Gems)
 		ValueTokens.Text = Fmt(Prof.trait_reroll_tokens)
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
 		ValueLevel.Text = tostring(Level)
-		ValueChallenge.Text = ChallengeClock()
-		ValueChallenge.TextColor3 = ResetMinuteOk() and Theme.Good or Theme.Warn
-		-- full-width compass feature: only when the unit is actually owned
-		local CompassUnit = Account.CompassUnit()
-		local Owned = CompassUnit and Account.HasUnit(CompassUnit) or false
-		Feature.Visible = Owned
-		if Owned then
-			CompassName.Text = Pretty(Account.UnitName(CompassUnit))
-			CompassTrait.Text = CompassTraitText()
-			if not CompassPortraitShown then
-				local Source = FindCollectionModel(Account.UnitName(CompassUnit))
-				if Source then
-					CompassModelHolder:ClearAllChildren()
-					local Clone = Source:Clone()
-					Clone.Parent = CompassModelHolder
-					local CFrameNow, Size = Clone:GetBoundingBox()
-					local Center = CFrameNow.Position
-					local Dist = math.max(Size.X, Size.Y, Size.Z, 2) * 2.2
-					CompassCamera.CFrame = CFrame.new(Center + Vector3.new(0, 0, Dist), Center)
-					CompassViewport.Visible = true
-					CompassFallback.Visible = false
-					CompassPortraitShown = true
-				end
-			end
-		else
-			CompassViewport.Visible = false
-			CompassFallback.Visible = true
-			CompassModelHolder:ClearAllChildren()
-			CompassPortraitShown = false
-		end
 
 		-- bars
 		local Endgame = math.max(Config.TargetLevel, 1)
