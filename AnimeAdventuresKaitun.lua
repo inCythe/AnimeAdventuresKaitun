@@ -531,6 +531,16 @@ function Account.UnitName(Id)
 	return type(Name) == "string" and Name or tostring(Id)
 end
 
+-- The game stores the actual celestial compass pick on the profile. Use that
+-- instead of the config value; UnitId resolves both ids and display names.
+function Account.CompassUnit()
+	local Picked = Account.Profile()._celestial_compass_pick
+	if type(Picked) == "string" and Picked ~= "" then
+		return Account.UnitId(Picked)
+	end
+	return Config.CompassUnit and Account.UnitId(Config.CompassUnit) or nil
+end
+
 function Account.HasUnit(Id)
 	if not Id then
 		return false
@@ -1135,7 +1145,7 @@ function UI.Overlay()
 		-- cards
 		local CompassCount = tonumber(Items[Config.CompassId])
 		if State.Compass then
-			ValueCompass.Text = Pretty(Config.CompassUnit)
+			ValueCompass.Text = Pretty(Account.UnitName(Account.CompassUnit()))
 			ValueCompass.TextColor3 = Theme.Good
 		elseif CompassCount and CompassCount > 0 then
 			ValueCompass.Text = ("x%d ready"):format(CompassCount)
@@ -2516,8 +2526,9 @@ function Lobby.AutoSell()
 
 	-- unit ids we always keep one copy of
 	local KeepIds = {}
-	if Config.CompassUnit then
-		KeepIds[Account.UnitId(Config.CompassUnit)] = true
+	local Compass = Account.CompassUnit()
+	if Compass then
+		KeepIds[Compass] = true
 	end
 	for _, Id in ipairs(Config.Team or {}) do
 		KeepIds[Account.UnitId(Id)] = true
@@ -2612,7 +2623,8 @@ end
 -- The GUI slot confirms the pick; the inventory item is the trigger to spend
 -- it. Kept for callers that pass Force, but the item check decides now.
 function Lobby.UseCompass(Force)
-	if not Config.CompassUnit then
+	local Pick = Account.CompassUnit()
+	if not Pick then
 		return false
 	end
 	-- the GUI slot is the source of truth, re-checked on every lobby visit
@@ -2635,9 +2647,9 @@ function Lobby.UseCompass(Force)
 		Log("compass remote not found")
 		return false
 	end
-	Log("compass -> %s", Account.UnitName(Config.CompassUnit))
+	Log("compass -> %s", Account.UnitName(Pick))
 	local Ok, Result = Util.Call(5, function()
-		return Ep:InvokeServer(Config.CompassId, Config.CompassUnit)
+		return Ep:InvokeServer(Config.CompassId, Pick)
 	end)
 	if not Ok then
 		Log("compass failed: %s", tostring(Result))
@@ -2654,7 +2666,7 @@ function Lobby.UseCompass(Force)
 		State.Compass = true
 		State.CompassDone = true
 		SaveState()
-		Log("compass used -> %s (slot verified)", Config.CompassUnit)
+		Log("compass used -> %s (slot verified)", Account.UnitName(Pick))
 		return true
 	end
 	Log("compass pick sent but the slot is not visible yet - will retry next lobby visit")
@@ -2706,7 +2718,7 @@ function Lobby.SummonOnce()
 	end
 	-- The compass pick must be used before the very first summon. Retry it
 	-- here even if the earlier lobby pass failed, and defer the roll.
-	if Config.CompassUnit and not CompassDone() and not Lobby.UseCompass(true) then
+	if Account.CompassUnit() and not CompassDone() and not Lobby.UseCompass(true) then
 		Log("compass not used yet - deferring the first summon to the next lobby visit")
 		return
 	end
@@ -2742,10 +2754,10 @@ end
 -- have a resource that can pay for a reroll. Used to block story/infinite/
 -- challenges until the roll is done.
 function Lobby.NeedTraitRoll()
-	if not Config.AutoTrait or not Config.CompassUnit then
+	if not Config.AutoTrait then
 		return false
 	end
-	local UnitId = Account.UnitId(Config.CompassUnit)
+	local UnitId = Account.CompassUnit()
 	if not UnitId or not Account.HasUnit(UnitId) then
 		return false
 	end
@@ -2758,7 +2770,7 @@ function Lobby.NeedTraitRoll()
 end
 
 function Lobby.HuntTarget()
-	return Account.UnitId(Config.CompassUnit)
+	return Account.CompassUnit()
 end
 
 -- Exact time from the server clock (no grace window). Challenges reset at
@@ -3505,7 +3517,8 @@ end
 -- owned — the compass pick alone must not enable them.
 local function ChallengesEnabled()
 	if Config.ChallengesOnlyAfterCompass then
-		return Config.CompassUnit ~= nil and Account.HasUnit(Config.CompassUnit)
+		local Compass = Account.CompassUnit()
+		return Compass ~= nil and Account.HasUnit(Compass)
 	end
 	return Config.DoChallenges == true
 end
@@ -3606,13 +3619,13 @@ function Lobby.Plan()
 			Lobby.EquipTeam()
 			Lobby.AutoSell()
 			if Lobby.NeedTraitRoll() then
-				Lobby.AutoRollTraits(Config.CompassUnit)
+				Lobby.AutoRollTraits(Account.CompassUnit())
 			end
 		end
 		return "hunt"
 	end
 	if Lobby.NeedTraitRoll() then
-		Lobby.AutoRollTraits(Config.CompassUnit)
+		Lobby.AutoRollTraits(Account.CompassUnit())
 		return "traits"
 	end
 
@@ -3644,8 +3657,9 @@ function Lobby.Plan()
 	-- challenges-only mode: once the compass UNIT is actually owned (the pick
 	-- alone does not count), stop joining story and infinite. Daily/normal
 	-- challenges above still run on every lobby visit.
-	if Config.ChallengesOnlyAfterCompass and Config.CompassUnit
-		and Account.HasUnit(Config.CompassUnit) then
+	local CompassUnit = Account.CompassUnit()
+	if Config.ChallengesOnlyAfterCompass and CompassUnit
+		and Account.HasUnit(CompassUnit) then
 		return "idle"
 	end
 	if Config.DoInfinite then
@@ -3750,8 +3764,9 @@ function Lobby.Run()
 	end
 	-- the compass unit can arrive from the pick, the first summon or a hunt;
 	-- one guarded call covers all three (state prevents rolling twice)
-	if Config.CompassUnit then
-		Lobby.AutoRollTraits(Config.CompassUnit)
+	local CompassUnit = Account.CompassUnit()
+	if CompassUnit then
+		Lobby.AutoRollTraits(CompassUnit)
 	end
 
 	while Loader.IsLobby do
