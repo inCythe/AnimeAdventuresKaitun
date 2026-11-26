@@ -979,7 +979,7 @@ function UI.Overlay()
 
 	-- stat cards ---------------------------------------------------------------
 	local Panel = New("Frame", {
-		LayoutOrder = 3,
+		LayoutOrder = 4,
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundColor3 = Theme.Panel,
@@ -1065,17 +1065,25 @@ function UI.Overlay()
 	local ValueRemnants = AddCard(4, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(5, "Limited Remnants", Icons.Remnants)
 	local ValueLevel = AddCard(6, "Level", nil, "LV", Theme.Accent)
-	local ValueCompassUnit, CompassCard, CompassIconBox = AddCard(7, "Compass Unit", Icons.Compass)
 
-	-- live 3D portrait: clone the unit model the game renders in the collection
-	-- GUI into a ViewportFrame so the compass unit's actual model is shown.
+	-- full-width compass unit feature: live 3D model + big name + trait.
+	-- sibling row above the small-card grid so it can span both columns.
+	local Feature = New("Frame", {
+		LayoutOrder = 3,
+		Size = UDim2.new(1, 0, 0, 104),
+		BackgroundColor3 = Theme.Card,
+		BorderSizePixel = 0,
+	}, Content)
+	Round(Feature, 12)
+	New("UIStroke", { Color = Theme.Stroke, Thickness = 1, Transparency = 0.5 }, Feature)
+
 	local CompassViewport = New("ViewportFrame", {
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(40, 40),
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 10, 0.5, 0),
+		Size = UDim2.fromOffset(88, 88),
 		BackgroundTransparency = 1,
 		Visible = false,
-	}, CompassIconBox)
+	}, Feature)
 	Round(CompassViewport, 10)
 	local CompassCamera = New("Camera", {}, CompassViewport)
 	CompassViewport.CurrentCamera = CompassCamera
@@ -1083,9 +1091,41 @@ function UI.Overlay()
 	local CompassModelHolder = New("Model", { Name = "UnitModel" }, CompassViewport)
 	local CompassPortraitShown = false
 
+	local CompassFallback = New("ImageLabel", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 10, 0.5, 0),
+		Size = UDim2.fromOffset(88, 88),
+		BackgroundTransparency = 1,
+		Image = Icons.Compass,
+		ScaleType = Enum.ScaleType.Fit,
+	}, Feature)
+	Round(CompassFallback, 10)
+
+	local CompassName = Label(Feature, {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 112, 0.5, -10),
+		Size = UDim2.new(1, -130, 0, 30),
+		Font = Enum.Font.GothamBold,
+		TextSize = 22,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Text = "Compass Unit",
+	})
+	local CompassTrait = Label(Feature, {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 112, 0.5, 16),
+		Size = UDim2.new(1, -130, 0, 22),
+		Font = Enum.Font.GothamMedium,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextColor3 = Theme.Warn,
+		Text = "",
+	})
+
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
-		LayoutOrder = 4,
+		LayoutOrder = 5,
 		Size = UDim2.new(1, 0, 0, 118),
 		BackgroundColor3 = Theme.Panel,
 		BackgroundTransparency = 0.1,
@@ -1259,30 +1299,31 @@ function UI.Overlay()
 		ValueRemnants.Text = Fmt(Items.star_remnant)
 		ValueLimited.Text = Fmt(Items.star_remnant_limited)
 		ValueLevel.Text = tostring(Level)
+		-- full-width compass feature: only when the unit is actually owned
 		local CompassUnit = Account.CompassUnit()
-		ValueCompassUnit.Text = CompassUnit
-			and ("%s · %s"):format(Pretty(Account.UnitName(CompassUnit)), CompassTraitText())
-			or "no compass unit"
-		ValueCompassUnit.TextColor3 = CompassUnit and Theme.Good or Theme.Muted
-
-		-- clone the real unit model from the collection GUI once per unit
-		local WantName = CompassUnit and Account.UnitName(CompassUnit) or nil
-		if WantName and not CompassPortraitShown then
-			local Source = FindCollectionModel(WantName)
-			if Source then
-				CompassModelHolder:ClearAllChildren()
-				local Clone = Source:Clone()
-				Clone.Parent = CompassModelHolder
-				-- frame the model with the viewport camera
-				local CFrameNow, Size = Clone:GetBoundingBox()
-				local Center = CFrameNow.Position
-				local Dist = math.max(Size.X, Size.Y, Size.Z, 2) * 2.2
-				CompassCamera.CFrame = CFrame.new(Center + Vector3.new(0, 0, Dist), Center)
-				CompassViewport.Visible = true
-				CompassPortraitShown = true
+		local Owned = CompassUnit and Account.HasUnit(CompassUnit) or false
+		Feature.Visible = Owned
+		if Owned then
+			CompassName.Text = Pretty(Account.UnitName(CompassUnit))
+			CompassTrait.Text = CompassTraitText()
+			if not CompassPortraitShown then
+				local Source = FindCollectionModel(Account.UnitName(CompassUnit))
+				if Source then
+					CompassModelHolder:ClearAllChildren()
+					local Clone = Source:Clone()
+					Clone.Parent = CompassModelHolder
+					local CFrameNow, Size = Clone:GetBoundingBox()
+					local Center = CFrameNow.Position
+					local Dist = math.max(Size.X, Size.Y, Size.Z, 2) * 2.2
+					CompassCamera.CFrame = CFrame.new(Center + Vector3.new(0, 0, Dist), Center)
+					CompassViewport.Visible = true
+					CompassFallback.Visible = false
+					CompassPortraitShown = true
+				end
 			end
-		elseif not CompassUnit then
+		else
 			CompassViewport.Visible = false
+			CompassFallback.Visible = true
 			CompassModelHolder:ClearAllChildren()
 			CompassPortraitShown = false
 		end
