@@ -2310,11 +2310,32 @@ local function NormalizeTraitSource(Source)
 	return S
 end
 
-local function NextTraitSource(Res, Exhausted)
+-- Star remnants are consumed per rarity (verified game rule):
+--   Mythic / Secret -> 5 remnants per reroll
+--   Rare / Epic / Legendary (and everything else) -> 1 remnant
+-- Tokens always cost 1. "TraitMinResources" stays as a safety reserve.
+local function RemnantCost(UnitId)
+	local Def = type(Units[UnitId]) == "table" and Units[UnitId] or {}
+	local Rarity = tostring(Def.rarity or ""):lower()
+	if Rarity == "mythic" or Rarity == "mythical" or Rarity == "secret" then
+		return 5
+	end
+	return 1
+end
+
+local function TraitRerollCost(Source, UnitId)
+	if Source == "star_remnant" or Source == "star_remnant_limited" then
+		return RemnantCost(UnitId)
+	end
+	return 1
+end
+
+local function NextTraitSource(Res, Exhausted, UnitId)
 	for _, Raw in ipairs(Config.TraitSources or {}) do
 		local Source = NormalizeTraitSource(Raw)
+		local Cost = TraitRerollCost(Source, UnitId)
 		if not (Exhausted and Exhausted[Source])
-			and (tonumber(Res[Source]) or 0) > Config.TraitMinResources then
+			and (tonumber(Res[Source]) or 0) - Cost >= Config.TraitMinResources then
 			return Source
 		end
 	end
@@ -2360,10 +2381,10 @@ function Lobby.AutoRollTraits(UnitId)
 	end
 
 	-- A roll that doesn't land just means this resource can't pay for the next
-	-- tier on this unit (remnants cost 1-5 depending on rarity, so 4 left can
-	-- still be too few). Fall through to the next source instead of stopping.
+	-- tier on this unit (remnant cost is 5 for Mythic/Secret, 1 otherwise).
+	-- Fall through to the next source instead of stopping.
 	local Exhausted = {} -- source -> true once it failed / didn't replicate
-	if not NextTraitSource(TraitResources(), Exhausted) then
+	if not NextTraitSource(TraitResources(), Exhausted, UnitId) then
 		Log("no trait reroll resources for %s - will retry next lobby visit", Account.UnitName(UnitId))
 		return
 	end
@@ -2381,18 +2402,19 @@ function Lobby.AutoRollTraits(UnitId)
 		end
 
 		local Res = TraitResources()
-		local Source = NextTraitSource(Res, Exhausted)
+		local Source = NextTraitSource(Res, Exhausted, UnitId)
 		if not Source then
 			break
 		end
 
+		local Cost = TraitRerollCost(Source, UnitId)
 		local BeforeSig = TraitSignature(Current)
 		local BeforeLeft = tonumber(Res[Source]) or 0
 		local Ok, Result = SpendTraitReroll(Source, Uuid)
 		local Landed = Ok and Result ~= false
 		if Landed then
 			-- a reroll only counts when the traits changed OR the resource
-			-- actually went down; otherwise it was refused by the server
+			-- actually dropped by the full cost; otherwise the server refused it
 			local Changed = false
 			local Deadline = os.clock() + Config.TraitChangeTimeout
 			repeat
@@ -2401,14 +2423,14 @@ function Lobby.AutoRollTraits(UnitId)
 				local FreshList = Fresh and UnitTraitList(Fresh.Unit) or {}
 				local NowRes = TraitResources()
 				Changed = (TraitSignature(FreshList) ~= BeforeSig)
-					or ((tonumber(NowRes[Source]) or 0) < BeforeLeft)
+					or ((tonumber(NowRes[Source]) or 0) <= BeforeLeft - Cost)
 			until Changed or os.clock() >= Deadline
 			Landed = Changed
 		end
 		if not Landed then
 			Exhausted[Source] = true
-			Log("trait reroll via %s did not land (%d left) - trying next source",
-				Source, BeforeLeft)
+			Log("trait reroll via %s did not land (%d left, needs %d) - trying next source",
+				Source, BeforeLeft, Cost)
 			continue -- move on to limited remnants / next configured source
 		end
 
