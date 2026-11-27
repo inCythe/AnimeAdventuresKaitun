@@ -1050,6 +1050,32 @@ function UI.Overlay()
 		}, Card)
 		Round(IconBox, 10)
 		if IconId then
+			-- game item-frame background (TraitReroll UseTokenFrame BG / EvolvedGlow)
+			local FrameBg = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://76373203609129",
+				ScaleType = Enum.ScaleType.Stretch,
+			}, IconBox)
+			Round(FrameBg, 10)
+			local GlowPink = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://105669515169727",
+				ImageColor3 = Color3.fromRGB(190, 80, 255),
+				ImageTransparency = 0.35,
+				ScaleType = Enum.ScaleType.Stretch,
+			}, IconBox)
+			Round(GlowPink, 10)
+			local GlowBlue = New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://105669515169727",
+				ImageColor3 = Color3.fromRGB(70, 160, 255),
+				ImageTransparency = 0.45,
+				ScaleType = Enum.ScaleType.Stretch,
+			}, IconBox)
+			Round(GlowBlue, 10)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
@@ -1128,10 +1154,11 @@ function UI.Overlay()
 			TextXAlignment = Enum.TextXAlignment.Right,
 			Text = "",
 		})
+		-- game health-bar style: dark navy track, cyan -> blue gradient fill
 		local Track = New("Frame", {
 			Position = UDim2.new(0, 18, 0, Y + 22),
 			Size = UDim2.new(1, -36, 0, 14),
-			BackgroundColor3 = Theme.Back,
+			BackgroundColor3 = Color3.fromRGB(0, 0, 38),
 			BorderSizePixel = 0,
 		}, Bars)
 		Round(Track, 6)
@@ -1141,12 +1168,16 @@ function UI.Overlay()
 			BorderSizePixel = 0,
 		}, Track)
 		Round(Fill, 6)
-		New("UIGradient", { Color = ColorSequence.new(ColorA, ColorB) }, Fill)
+		New("UIGradient", {
+			Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 170, 255)),
+				ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 68, 255)),
+			}),
+			Rotation = 90,
+		}, Fill)
 		return function(Fraction, Text)
 			Percent.Text = Text
-			TweenService:Create(Fill, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-				Size = UDim2.fromScale(math.clamp(Fraction, 0, 1), 1),
-			}):Play()
+			Fill.Size = UDim2.fromScale(math.clamp(Fraction, 0, 1), 1)
 		end
 	end
 
