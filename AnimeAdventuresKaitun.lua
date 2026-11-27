@@ -9,7 +9,7 @@
 --   1. redeem level-gated codes (verified against profile.redeemed_codes)
 --   2. celestial compass pick - only while the summon GUI slot is empty
 --   3. claim daily login / board missions / level rewards / quests / battlepass
---   4. one 10x summon per account (saved to AAKaitun_<UserId>.json)
+--   4. one 10x summon while the team has fewer than 6 units (no saved files)
 --   5. equip the configured Team, otherwise the best owned units
 --   6. auto sell spare units (see AUTO SELL below)
 --   7. trait reroll on the compass unit once it is owned (see TRAITS below)
@@ -349,45 +349,20 @@ end)
 
 
 -- ============================================================================
--- state (persisted, tiny on purpose)
+-- state (in-memory only - the game profile / inventory is the real ledger)
 -- ============================================================================
 local State = {
-	Summoned = false,   -- the one-time 10x was done
-	Compass = false,    -- the compass pick was used
-	CompassDone = false, -- same flag, name used by the older hosted build
-	Clear = {},         -- challenge mode -> uuid already handled
+	Clear = {},         -- challenge mode -> uuid already handled (this session)
 	TraitRoll = {},     -- unit id -> { doneAt, gotUnique, traits, rolls }
-	BlackScreen = true, -- the old overlay's persisted black-screen switch
+	BlackScreen = true, -- overlay switch
 	Current = nil,      -- { Kind = "story"|"infinite"|"challenge", ... } for the match
 }
 
-local StateFile = "AAKaitun_" .. tostring(Player.UserId) .. ".json"
-
-local function SaveState()
-	if type(writefile) == "function" then
-		pcall(writefile, StateFile, HttpService:JSONEncode(State))
-	end
-end
-
-local function LoadState()
-	if not (type(isfile) == "function" and isfile(StateFile) and type(readfile) == "function") then
-		return
-	end
-	local Ok, Data = pcall(function()
-		return HttpService:JSONDecode(readfile(StateFile))
-	end)
-	if Ok and type(Data) == "table" then
-		for Key, Value in pairs(Data) do
-			State[Key] = Value
-		end
-	end
-	if type(State.Clear) ~= "table" then
-		State.Clear = {}
-	end
-	if type(State.TraitRoll) ~= "table" then
-		State.TraitRoll = {}
-	end
-end
+-- No JSON files are written or read any more. Keep the names as no-ops so the
+-- existing call sites stay harmless; ownership of the compass unit, the unit
+-- count and the profile's challenge ledger decide everything between visits.
+local function SaveState() end
+local function LoadState() end
 
 -- ============================================================================
 -- utilities
@@ -1327,7 +1302,7 @@ function UI.Overlay()
 		local CompassOwned = CompassUnit and Account.HasUnit(CompassUnit) or false
 		local CompassColor = CompassOwned and Theme.Good or Theme.Bad
 		local CompassCount = tonumber(Items[Config.CompassId])
-		if State.Compass then
+		if CompassOwned then
 			ValueCompass.Text = Pretty(Account.UnitName(CompassUnit))
 			ValueCompass.TextColor3 = CompassColor
 		elseif CompassCount and CompassCount > 0 then
@@ -2825,8 +2800,10 @@ local function WaitForCompassGui(Timeout)
 	return CompassUsedInGui()
 end
 
+-- The compass is done only when the pick has become an owned unit. The compass
+-- item in inventory means it is still pending, never that it is done.
 local function CompassDone()
-	return State.Compass == true or State.CompassDone == true
+	return CompassUnitOwned()
 end
 
 -- Same inventory shape TraitResources() uses for star remnants:
@@ -2856,20 +2833,10 @@ function Lobby.UseCompass(Force)
 	end
 	-- the pick is already a unit: nothing left to redeem or spend
 	if CompassUnitOwned() then
-		if not CompassDone() then
-			State.Compass = true
-			State.CompassDone = true
-			SaveState()
-		end
 		return true
 	end
 	-- the GUI slot is the source of truth, re-checked on every call
 	if CompassUsedInGui() then
-		if not CompassDone() then
-			State.Compass = true
-			State.CompassDone = true
-			SaveState()
-		end
 		return true
 	end
 	if not HasCompassItem() then
@@ -2900,18 +2867,13 @@ function Lobby.UseCompass(Force)
 			end
 			if Result ~= false then
 				if WaitForCompassGui(4) then
-					State.Compass = true
-					State.CompassDone = true
-					SaveState()
 					Log("compass used -> %s (slot verified)", Account.UnitName(Pick))
 					return true
 				end
-				-- item consumed but GUI not updated yet: treat as spent
+				-- item consumed but GUI not replicated yet: the unit check on
+				-- the next tick is the real confirmation
 				if CompassItemCount() < Before then
-					State.Compass = true
-					State.CompassDone = true
-					SaveState()
-					Log("compass used -> %s (item consumed)", Account.UnitName(Pick))
+					Log("compass pick sent for %s - waiting for the unit", Account.UnitName(Pick))
 					return true
 				end
 			end
@@ -2961,13 +2923,21 @@ local function SellAfterSummon(HatchBefore, CountBefore)
 	Lobby.AutoSell()
 end
 
+-- Summon only while the collection cannot fill the 6 team slots. The owned
+-- unit count is the ledger, so no saved file is needed to remember this.
+local SUMMON_MIN_UNITS = 6
+
 function Lobby.SummonOnce()
-	if not Config.Summon10Once or State.Summoned then
+	if not Config.Summon10Once then
 		return
 	end
-	-- The compass pick must be used before the very first summon. Bootstrap
-	-- retries the pick in this same visit; only defer if the item is still
-	-- unconsumed after those attempts.
+	local Count = OwnedCount()
+	if Count >= SUMMON_MIN_UNITS then
+		LogT("Summon", "%d units owned - slots filled, skipping summon", Count)
+		return
+	end
+	-- The compass pick must be used before the summon. Bootstrap retries the
+	-- pick in this same visit; only defer if the item is still unconsumed.
 	if Account.CompassUnit() and HasCompassItem() and not CompassDone() then
 		Log("compass not used yet - deferring the first summon to the next planner tick")
 		return
@@ -2990,13 +2960,11 @@ function Lobby.SummonOnce()
 		task.wait(0.1)
 	until Account.Gems() < Before or os.clock() >= Deadline
 	if Account.Gems() < Before then
-		State.Summoned = true
-		SaveState()
-		LogT("Summon", "first 10x done on %s", Config.SummonBanner)
-		-- wait for the pulled units, then let Lobby.Run equip before selling
+		LogT("Summon", "10x done on %s", Config.SummonBanner)
+		-- wait for the pulled units, then let Bootstrap equip before selling
 		WaitForSummonCollection(HatchBefore, CountBefore)
 	else
-		Log("first 10x was ignored - will retry next visit")
+		Log("10x was ignored - will retry next visit")
 	end
 end
 
@@ -4060,13 +4028,9 @@ function Lobby.Bootstrap()
 			return false
 		end
 	end
-	-- 3) one-time 10x summon
-	if Config.Summon10Once and not State.Summoned then
-		Lobby.SummonOnce()
-		if not State.Summoned then
-			return false
-		end
-	end
+	-- 3) one 10x while the collection has fewer than 6 units; with 6+ owned
+	-- this is a no-op and the existing units are just equipped below
+	Lobby.SummonOnce()
 	-- 4) equip the full team BEFORE selling, so a new unit is never sold first
 	if Config.EquipTeam and not EquipDone then
 		EquipAttempts += 1
