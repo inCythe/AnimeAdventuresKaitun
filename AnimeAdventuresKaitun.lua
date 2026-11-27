@@ -2009,30 +2009,36 @@ local function EnsureCompass()
 	end
 	Unselect()
 
-	-- 3) handle the dialog that appears: group join prompt OR favorite prompt
+	-- 3) handle the dialog that appears: group join prompt OR favorite prompt.
+	-- throttle button presses so a stuck prompt cannot spin the loop.
+	local PROMPT_PRESS_INTERVAL = 0.8 -- seconds between any prompt button press
+	local LastPromptPress = 0
 	local PromptDeadline = os.clock() + 20
 	while os.clock() < PromptDeadline do
 		if HasCompassInInventory() then
 			CloseCodesUi()
 			return true
 		end
-		-- group join prompt: press its "1-<name>" button
-		local JoinBtn = FindJoinButton()
-		if JoinBtn then
-			LogT("Group", "group join prompt popped - pressing join")
-			SpamButton(JoinBtn, IsInGroup, 2)
-			Unselect()
-		else
-			-- favorite prompt: press its Yes button ("2")
-			local FavBtn = FindFavoriteButton()
-			if FavBtn then
-				LogT("Group", "favorite prompt popped - pressing Yes")
-				SpamButton(FavBtn, function() return true end, 2)
+		if os.clock() - LastPromptPress >= PROMPT_PRESS_INTERVAL then
+			-- group join prompt: press its "1-<name>" button
+			local JoinBtn = FindJoinButton()
+			if JoinBtn then
+				LogT("Group", "group join prompt popped - pressing join")
+				LastPromptPress = os.clock()
+				PressButton(JoinBtn)
 				Unselect()
 			else
-				task.wait(0.2)
+				-- favorite prompt: press its Yes button ("2")
+				local FavBtn = FindFavoriteButton()
+				if FavBtn then
+					LogT("Group", "favorite prompt popped - pressing Yes")
+					LastPromptPress = os.clock()
+					PressButton(FavBtn)
+					Unselect()
+				end
 			end
 		end
+		task.wait(0.2) -- always yield, even while a prompt is present
 	end
 
 	CloseCodesUi()
