@@ -1989,19 +1989,9 @@ local function EnsureCompass()
 	if not EnterBox then
 		return false
 	end
+	-- set the textbox content directly; no focus / key press needed (verified live)
 	EnterBox.Text = Config.FavoriteCode
 	task.wait(0.1)
-	-- fire FocusLost via the actual keyboard: select the box and press Return,
-	-- never firesignal
-	pcall(function()
-		EnterBox.Selectable = true
-		GuiService.SelectedObject = EnterBox
-		task.wait(0.05)
-		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-		task.wait(0.02)
-		VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-	end)
-	task.wait(0.3)
 
 	-- spam the Code UI Yes button until a prompt pops out (or compass lands)
 	local YesButton = Window.ButtonHolder and Window.ButtonHolder:FindFirstChild("Yes")
