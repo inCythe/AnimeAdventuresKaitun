@@ -1044,16 +1044,20 @@ function UI.Overlay()
 			AnchorPoint = Vector2.new(0, 0.5),
 			Position = UDim2.new(0, 10, 0.5, 0),
 			Size = UDim2.fromOffset(40, 40),
-			BackgroundColor3 = Theme.Back,
+			BackgroundColor3 = Color3.fromRGB(10, 12, 22), -- dark token background
 			BorderSizePixel = 0,
 		}, Card)
 		Round(IconBox, 10)
 		if IconId then
+			-- animated rainbow border (matches the TraitReroll token glow)
+			local BorderStroke = New("UIStroke", {
+				Color = Color3.new(1, 1, 1), Thickness = 2, Transparency = 0.05,
+			}, IconBox)
+			RainbowGradient(BorderStroke)
 			-- exact TraitReroll UseItemFrame.ItemFrame2 icon frame:
 			-- BG(grey) -> BackgroundGlow -> BorderFrame(0.925, aspect 1, corner 0.065)
 			--   -> bordershadow(130155782712929) -> line(0.9) -> pattern(86044272558886)
 			--   -> inner fill(76373203609129 @0.5) -> the icon
-			IconBox.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
 			New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
