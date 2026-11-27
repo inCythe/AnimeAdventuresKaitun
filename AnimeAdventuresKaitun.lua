@@ -242,6 +242,7 @@ local Config = {
 	MatchmakingRetries = 4,
 	MatchmakingCooldown = 20,   -- wait after a timed-out queue before requeueing
 	QueueTimeout = 300,         -- leave the queue after 5 minutes still unjoined
+	MatchIdleTimeout = 300,     -- leave a match that never starts within 5 minutes
 
 	-- auto trait reroll (compass unit; Unique is always kept) ----------------
 	AutoTrait = true,
@@ -2830,12 +2831,20 @@ end
 
 -- The GUI slot confirms the pick; the inventory item is the trigger to spend
 -- it. Kept for callers that pass Force, but the item check decides now.
+local function CompassItemCount()
+	local P = Account.Profile()
+	local Items = type(P.inventory) == "table"
+		and type(P.inventory.normal_items) == "table"
+		and P.inventory.normal_items or {}
+	return tonumber(Items[Config.CompassId]) or 0
+end
+
 function Lobby.UseCompass(Force)
 	local Pick = Account.CompassUnit()
 	if not Pick then
 		return false
 	end
-	-- the GUI slot is the source of truth, re-checked on every lobby visit
+	-- the GUI slot is the source of truth, re-checked on every call
 	if CompassUsedInGui() then
 		if not CompassDone() then
 			State.Compass = true
@@ -2844,8 +2853,6 @@ function Lobby.UseCompass(Force)
 		end
 		return true
 	end
-	-- item present = pick not spent yet: always use it (every lobby visit,
-	-- no once-per-session throttle). No item = nothing to use.
 	if not HasCompassItem() then
 		return false
 	end
@@ -2855,29 +2862,44 @@ function Lobby.UseCompass(Force)
 		Log("compass remote not found")
 		return false
 	end
-	Log("compass -> %s", Account.UnitName(Pick))
-	local Ok, Result = Util.Call(5, function()
-		return Ep:InvokeServer(Config.CompassId, Pick)
-	end)
-	if not Ok then
-		Log("compass failed: %s", tostring(Result))
-		return false
+
+	-- The pick reply can land before the summon GUI slot replicates. Retry the
+	-- pick within this same lobby visit and also accept the item disappearing
+	-- as proof the server spent it, so the first summon is never deferred just
+	-- because the GUI was slow.
+	local Before = CompassItemCount()
+	for Attempt = 1, 4 do
+		Log("compass -> %s (try %d)", Account.UnitName(Pick), Attempt)
+		local Ok, Result = Util.Call(5, function()
+			return Ep:InvokeServer(Config.CompassId, Pick)
+		end)
+		if not Ok then
+			Log("compass failed: %s", tostring(Result))
+		else
+			if type(Result) == "string" then
+				Log("compass replied: %s", Result)
+			end
+			if Result ~= false then
+				if WaitForCompassGui(4) then
+					State.Compass = true
+					State.CompassDone = true
+					SaveState()
+					Log("compass used -> %s (slot verified)", Account.UnitName(Pick))
+					return true
+				end
+				-- item consumed but GUI not updated yet: treat as spent
+				if CompassItemCount() < Before then
+					State.Compass = true
+					State.CompassDone = true
+					SaveState()
+					Log("compass used -> %s (item consumed)", Account.UnitName(Pick))
+					return true
+				end
+			end
+		end
+		task.wait(0.6)
 	end
-	if type(Result) == "string" then
-		Log("compass replied: %s", Result)
-	end
-	if Result == false then
-		return false
-	end
-	-- only accept the pick once the slot actually appears in the GUI
-	if WaitForCompassGui(6) then
-		State.Compass = true
-		State.CompassDone = true
-		SaveState()
-		Log("compass used -> %s (slot verified)", Account.UnitName(Pick))
-		return true
-	end
-	Log("compass pick sent but the slot is not visible yet - will retry next lobby visit")
+	Log("compass pick did not land this visit")
 	return false
 end
 
@@ -2924,10 +2946,11 @@ function Lobby.SummonOnce()
 	if not Config.Summon10Once or State.Summoned then
 		return
 	end
-	-- The compass pick must be used before the very first summon. Retry it
-	-- here even if the earlier lobby pass failed, and defer the roll.
-	if Account.CompassUnit() and not CompassDone() and not Lobby.UseCompass(true) then
-		Log("compass not used yet - deferring the first summon to the next lobby visit")
+	-- The compass pick must be used before the very first summon. Bootstrap
+	-- retries the pick in this same visit; only defer if the item is still
+	-- unconsumed after those attempts.
+	if Account.CompassUnit() and HasCompassItem() and not CompassDone() then
+		Log("compass not used yet - deferring the first summon to the next planner tick")
 		return
 	end
 	local Banner = Banners[Config.SummonBanner]
@@ -3727,6 +3750,23 @@ function Lobby.ChallengeDefs()
 	}
 end
 
+-- The game keeps its own completion ledger on the profile. Combine it with
+-- our saved State.Clear so a challenge finished in an earlier session is not
+-- queued again, while a newly issued uuid is always treated as available.
+local function ChallengeCleared(Def, Uuid)
+	if not Uuid then
+		return false
+	end
+	if State.Clear[Def.Mode] == Uuid then
+		return true
+	end
+	local P = Account.Profile()
+	local Last = Def.Mode == "daily"
+		and P.last_completed_daily_challenge_uuid
+		or P.last_completed_challenge_uuid
+	return Last ~= nil and tostring(Last) == Uuid
+end
+
 -- nil = nothing to join (cleared, unavailable, or level gated)
 function Lobby.ChallengeUuid(Def)
 	local Data, Ok = Util.Invoke(Def.Get)
@@ -3745,7 +3785,7 @@ function Lobby.ChallengeUuid(Def)
 		SaveState()
 		return nil
 	end
-	if State.Clear[Def.Mode] == Uuid then
+	if ChallengeCleared(Def, Uuid) then
 		return nil
 	end
 	return Uuid
@@ -3824,6 +3864,8 @@ end
 -- ============================================================================
 -- returns Def, Uuid, Reachable. Only the remote reply + our saved ledger decide
 -- whether a challenge is still pending.
+-- Daily is first in ChallengeDefs(), so it is always tried before normal.
+-- Both are only queued while their current uuid is still pending.
 local function PickChallenge(Level)
 	local Reachable = false
 	for _, Def in ipairs(Lobby.ChallengeDefs()) do
@@ -3836,7 +3878,7 @@ local function PickChallenge(Level)
 					or Data.already_completed == true or Data.claimed == true
 					or Data.already_claimed == true
 				if Uuid then
-					Cleared = Cleared or State.Clear[Def.Mode] == Uuid
+					Cleared = Cleared or ChallengeCleared(Def, Uuid)
 				end
 				if Uuid and not Cleared then
 					return Def, Uuid, true
@@ -3964,6 +4006,76 @@ function Lobby.WaitReady()
 	return true
 end
 
+-- Bootstrap is retried by the planner loop until every one-time step has
+-- actually landed. Run() used to do these steps once and then fall through to
+-- story/challenges even when the compass pick or the first summon failed,
+-- which is why the first summon only happened on a LATER lobby visit.
+local BootstrapDone = false
+local EquipDone = false
+local SellDone = false
+local EquipAttempts = 0
+local SocialAttempts = 0
+
+function Lobby.Bootstrap()
+	if BootstrapDone then
+		return true
+	end
+	-- 1) acquire the compass item (group + code) if it has not landed yet
+	if Config.JoinGroup and not CompassDone() and not HasCompassItem() then
+		SocialAttempts += 1
+		GroupAndFavorite()
+		if not HasCompassItem() and not CompassDone() then
+			if SocialAttempts >= 3 then
+				LogT("Compass", "item still missing after 3 attempts - continuing")
+			else
+				return false
+			end
+		end
+	end
+	-- 2) spend the compass item as soon as it is in the inventory
+	if HasCompassItem() and not CompassDone() then
+		Lobby.UseCompass(true)
+		if HasCompassItem() and not CompassDone() then
+			return false
+		end
+	end
+	-- 3) one-time 10x summon
+	if Config.Summon10Once and not State.Summoned then
+		Lobby.SummonOnce()
+		if not State.Summoned then
+			return false
+		end
+	end
+	-- 4) equip the full team BEFORE selling, so a new unit is never sold first
+	if Config.EquipTeam and not EquipDone then
+		EquipAttempts += 1
+		EquipDone = Lobby.EquipTeam() == true
+		if not EquipDone then
+			if EquipAttempts >= 5 then
+				LogT("Team", "slots still not full - skipping sell")
+				EquipDone = true
+				SellDone = true -- never sell an incomplete team
+			else
+				LogT("Team", "slots not full (try %d) - retrying", EquipAttempts)
+				return false
+			end
+		end
+	elseif not Config.EquipTeam then
+		EquipDone = true
+	end
+	if not SellDone then
+		Lobby.AutoSell()
+		SellDone = true
+	end
+	-- 5) traits on the compass unit (internally guarded against re-rolling)
+	local CompassUnit = Account.CompassUnit()
+	if CompassUnit and Lobby.NeedTraitRoll() then
+		Lobby.AutoRollTraits(CompassUnit)
+	end
+	BootstrapDone = true
+	return true
+end
+
 function Lobby.Run()
 	LogT("Lobby", "mode")
 	if not Lobby.WaitReady() then
@@ -3993,35 +4105,8 @@ function Lobby.Run()
 
 	GroupAndFavorite() -- join group + favorite game before claiming codes
 	Lobby.RedeemCodes()
-	Lobby.Compass()
 	Lobby.Claims()
-	Lobby.SummonOnce()
-	-- equip the full team BEFORE selling anything; otherwise a newly summoned
-	-- unit can be sold before it ever reaches a slot
-	local TeamFull = false
-	if not Config.EquipTeam then
-		TeamFull = true -- user opted out of team equipping
-	else
-		for Attempt = 1, 4 do
-			TeamFull = Lobby.EquipTeam() == true
-			if TeamFull then
-				break
-			end
-			LogT("Team", "slots not full (try %d) - waiting before selling", Attempt)
-			task.wait(2)
-		end
-	end
-	if TeamFull then
-		Lobby.AutoSell() -- only after every slot is equipped
-	else
-		LogT("Sell", "skipped - team slots are not full yet")
-	end
-	-- the compass unit can arrive from the pick, the first summon or a hunt;
-	-- one guarded call covers all three (state prevents rolling twice)
-	local CompassUnit = Account.CompassUnit()
-	if CompassUnit then
-		Lobby.AutoRollTraits(CompassUnit)
-	end
+	Lobby.Bootstrap() -- compass -> summon -> equip -> sell -> traits
 
 	while Loader.IsLobby do
 		if os.clock() - LastSettings >= 15 then
@@ -4031,6 +4116,12 @@ function Lobby.Run()
 		if Env.AAKaitunStop then
 			Log("stop flag set - exiting")
 			return
+		end
+		-- never start story/challenges until compass, first summon, team and
+		-- sell are really done; retry in this same lobby visit if they failed
+		if not Lobby.Bootstrap() then
+			task.wait(2)
+			continue
 		end
 		UI.Set(("Lv %d | %d gems | %s"):format(Account.Level(), Account.Gems(), "planning"))
 		local Ok, Result = pcall(Lobby.Plan)
@@ -5376,6 +5467,9 @@ function Match.Run()
 	local LoseVoted = false
 	local LastUi = 0
 	local WasActive = false
+	-- a match that never actually starts (stuck on the loading/pregame screen)
+	-- must not hold the bot forever; leave back to the lobby after 5 minutes
+	local PreGameSince = os.clock()
 	-- remember if a reset/hunt window was hit DURING this match, so Decide can
 	-- leave at the end even if the minute has already passed by then
 	Match.ResetSeen = false
@@ -5396,6 +5490,7 @@ function Match.Run()
 		pcall(Match.Votes)
 
 		if Match.Active() then
+			PreGameSince = os.clock()
 			if not WasActive then
 				WasActive = true
 				Handled = false
@@ -5439,6 +5534,13 @@ function Match.Run()
 			end
 		else
 			WasActive = false
+			if not Match.Finished() and os.clock() - PreGameSince >= Config.MatchIdleTimeout then
+				LogT("Match", "idle for %ds with no game start - leaving to lobby",
+					Config.MatchIdleTimeout)
+				Util.Fire("teleport_back_to_lobby")
+				task.wait(2)
+				return
+			end
 			if Match.Finished() and not Handled then
 				Handled = true
 				task.spawn(Match.Finish)
