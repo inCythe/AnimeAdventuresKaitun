@@ -1952,28 +1952,8 @@ local function EnsureCompass()
 		Unselect()
 	end
 
-	-- 2) walk to the in-world Code UI and submit the compass code ONCE
-	local Character = Player.Character or Player.CharacterAdded:Wait()
-	local Root = Character:WaitForChild("HumanoidRootPart")
-	local CodesPart = workspace:FindFirstChild("_codes")
-	if CodesPart then
-		local Position
-		if CodesPart:IsA("BasePart") then
-			Position = CodesPart.Position
-		elseif CodesPart:IsA("Model") then
-			local Ok, Pivot = pcall(function()
-				return CodesPart:GetPivot()
-			end)
-			if Ok then
-				Position = Pivot.Position
-			end
-		end
-		if Position then
-			Root.CFrame = CFrame.new(Position + Vector3.new(0, 3, 0))
-		end
-	end
-	task.wait(1.5)
-
+	-- 2) open the Code UI directly (live-tested: no teleport needed) and
+	-- submit the compass code
 	local CodesUi = PlayerGui:WaitForChild("Codes", 10)
 	local Window = CodesUi and CodesUi:WaitForChild("Window", 5)
 	if not Window then
