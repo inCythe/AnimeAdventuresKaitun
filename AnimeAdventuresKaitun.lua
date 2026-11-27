@@ -69,7 +69,6 @@ local GuiService = game:GetService("GuiService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local GetHui = type(gethui) == "function" and gethui or nil
-local FireSignal = type(firesignal) == "function" and firesignal or nil
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
@@ -1907,21 +1906,19 @@ local function HasCompassInInventory()
 	return (tonumber(Items[Config.CompassId]) or 0) > 0
 end
 
--- Hide the in-world Code UI once we are done with it.
-local function CloseCodesUi()
+-- Open/hide the in-world Code UI. Live-verified: Gui.Enabled is what actually
+-- opens it; Window.Visible stays true regardless. Use Enabled only.
+local function SetCodesUiOpen(Open)
 	local Gui = PlayerGui:FindFirstChild("Codes")
-	if not Gui then
-		return
-	end
-	pcall(function()
-		Gui.Enabled = false
-	end)
-	local Window = Gui:FindFirstChild("Window")
-	if Window then
+	if Gui then
 		pcall(function()
-			Window.Visible = false
+			Gui.Enabled = Open
 		end)
 	end
+end
+
+local function CloseCodesUi()
+	SetCodesUiOpen(false)
 end
 
 -- Get the compass item: group join -> Code UI code submit -> handle whichever
@@ -1979,8 +1976,12 @@ local function EnsureCompass()
 	if not Window then
 		return false
 	end
+	-- enable the GUI if it is not open yet (Window.Visible is not the switch)
+	if not CodesUi.Enabled then
+		SetCodesUiOpen(true)
+	end
 	local UiDeadline = os.clock() + 5
-	while not Window.Visible and os.clock() < UiDeadline do
+	while not CodesUi.Enabled and os.clock() < UiDeadline do
 		task.wait(0.1)
 	end
 
@@ -1990,15 +1991,31 @@ local function EnsureCompass()
 	end
 	EnterBox.Text = Config.FavoriteCode
 	task.wait(0.1)
-	if FireSignal then
-		pcall(function()
-			FireSignal(EnterBox.FocusLost, true)
-		end)
-	end
-	task.wait(0.5)
+	-- fire FocusLost via the actual keyboard: select the box and press Return,
+	-- never firesignal
+	pcall(function()
+		EnterBox.Selectable = true
+		GuiService.SelectedObject = EnterBox
+		task.wait(0.05)
+		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+		task.wait(0.02)
+		VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+	end)
+	task.wait(0.3)
+
+	-- spam the Code UI Yes button until a prompt pops out (or compass lands)
 	local YesButton = Window.ButtonHolder and Window.ButtonHolder:FindFirstChild("Yes")
-	if YesButton and ButtonAlive(YesButton) then
-		PressButton(YesButton) -- press once
+	local SubmitDeadline = os.clock() + 8
+	while os.clock() < SubmitDeadline do
+		if HasCompassInInventory() or FindJoinButton() or FindFavoriteButton() then
+			break
+		end
+		if YesButton and ButtonAlive(YesButton) then
+			PressButton(YesButton)
+		else
+			break
+		end
+		task.wait(0.2)
 	end
 	Unselect()
 
