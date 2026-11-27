@@ -3771,8 +3771,13 @@ function Lobby.Slot()
 	return math.floor(Now / 1800)
 end
 
+-- How long to wait for MatchmakingUI to confirm our map after requesting.
+-- request_matchmaking replies before the client enables the UI, so an
+-- immediate Queued()/QueueMap() check races and always looks like "not queued".
+local QUEUE_CONFIRM_TIMEOUT = 5
+
 function Lobby.JoinChallenge(Def, Uuid)
-	if Lobby.QueueMap() == Def.Map then
+	if Lobby.Queued() and Lobby.QueueMap() == Def.Map then
 		return true
 	end
 	if Lobby.Queued() then
@@ -3790,22 +3795,17 @@ function Lobby.JoinChallenge(Def, Uuid)
 	for Attempt = 1, Config.MatchmakingRetries do
 		Log("queueing %s (%d/%d)", Def.Label, Attempt, Config.MatchmakingRetries)
 		Util.Invoke("request_matchmaking", Def.LevelId)
-		local QueueStart = os.clock()
-		repeat
-			if Lobby.QueueMap() == Def.Map then
+		-- give the client time to show the queue before deciding we failed
+		local ConfirmEnd = os.clock() + QUEUE_CONFIRM_TIMEOUT
+		while os.clock() < ConfirmEnd do
+			if Lobby.Queued() and Lobby.QueueMap() == Def.Map then
 				Log("queued for %s", Def.Label)
 				return true
 			end
-			-- if we dropped out of the queue on our own, stop waiting
-			if not Lobby.Queued() then
-				break
-			end
 			task.wait(0.2)
-		until os.clock() - QueueStart >= Config.QueueTimeout
-
-		-- 5 minutes elapsed without joining: explicitly leave, then wait 20s
+		end
+		Log("queue not confirmed for %s - retrying", Def.Label)
 		if Lobby.Queued() then
-			Log("queue timed out after %ds - leaving matchmaking", Config.QueueTimeout)
 			Util.Invoke("leave_matchmaking")
 			task.wait(0.5)
 		end
@@ -3920,11 +3920,18 @@ function Lobby.Wait()
 	local Started = os.clock()
 	while Loader.IsLobby do
 		if Lobby.Queued() then
-			if os.clock() - Started > Config.QueueTimeout then
+			if os.clock() - Started >= Config.QueueTimeout then
 				Log("queue timed out after %ds - leaving matchmaking", Config.QueueTimeout)
 				Util.Invoke("leave_matchmaking")
 				task.wait(Config.MatchmakingCooldown)
-				return
+				-- requeue the same pending challenge after the cooldown
+				local Def = PickChallenge(Account.Level())
+				if not Def then
+					return
+				end
+				Util.Invoke("request_matchmaking", Def.LevelId)
+				Started = os.clock()
+				Log("requeued %s after %ds cooldown", Def.Label, Config.MatchmakingCooldown)
 			end
 		elseif os.clock() - Started > 60 then
 			return
