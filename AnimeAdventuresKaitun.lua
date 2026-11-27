@@ -1899,8 +1899,8 @@ end
 
 -- The game only offers a favorite prompt from the in-world Code UI, so walk
 -- to _codes, submit FavoriteCode, then press the prompt button.
-local function FavoriteViaCode()
-	if IsFavorited() then
+local function FavoriteViaCode(Force)
+	if IsFavorited() and not Force then
 		return true
 	end
 	LogT("Group", "favoriting through the Code UI")
@@ -1980,6 +1980,7 @@ end
 local CodeDead = {}
 local LastSocialRetry = -60 -- os.clock() of last attempt; -60 makes the first call immediate
 local SOCIAL_RETRY_WAIT = 30 -- seconds between group/favorite re-prompts
+local ForceSocialPrompt = false -- set when needs_social comes back and no compass is owned
 
 -- The social-gated compass code (CELESTIALCOMPASSU21) is the real proof that
 -- the group join + favorite actually registered on the account. Reading the
@@ -2030,13 +2031,15 @@ local function GroupAndFavorite()
 	end
 	LastSocialRetry = os.clock()
 
-	-- JoinGroup / FavoriteViaCode return true immediately when already done.
+	-- JoinGroup returns immediately when already in the group. When needs_social
+	-- was reported, force a fresh favorite prompt even if GetFavorite says true.
 	local Joined = JoinGroup()
 	local Favorited = false
 	if Joined then
 		task.wait(1)
-		Favorited = FavoriteViaCode()
+		Favorited = FavoriteViaCode(ForceSocialPrompt)
 	end
+	ForceSocialPrompt = false
 	LogT("Group", "group=%s favorite=%s | live group=%s fav=%s (code still not redeemed)",
 		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done",
 		tostring(IsInGroup()), tostring(IsFavorited()))
@@ -2115,14 +2118,22 @@ function Lobby.RedeemCodes()
 						Log("code %s: rejected (invalid, expired or already redeemed)", Code)
 					end
 				else
-					-- needs_social is disregarded while the compass is still
-					-- missing — keep firing this remote on every plan tick
-					if IsSocial and tostring(Reply) == "needs_social" then
-						Log("code %s: needs_social (ignored - compass not owned yet)", Code)
+					-- needs_social is only ignored when the compass is already
+					-- owned. Otherwise force a fresh group/favorite prompt and
+					-- keep firing the redeem remote on every plan tick.
+					local SocialReply = IsSocial and tostring(Reply) == "needs_social"
+					if SocialReply then
+						if HasCompassInInventory() then
+							Log("code %s: needs_social (ignored - compass already owned)", Code)
+						else
+							ForceSocialPrompt = true
+							LastSocialRetry = -60 -- allow an immediate re-prompt
+							Log("code %s: needs_social - re-prompting group/favorite and retrying", Code)
+						end
 					else
 						Log("code %s: %s", Code, tostring(Reply))
 					end
-					if tostring(Reply) ~= "needs_social" and not IsSocial then
+					if not SocialReply and not IsSocial then
 						CodeDead[Code] = true
 					end
 				end
