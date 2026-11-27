@@ -1177,9 +1177,10 @@ function UI.Overlay()
 		})
 	end
 
-	local ValueGems = AddCard(1, "Gems", Icons.Gems)
-	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
-	local ValueUnique = AddCard(3, "Unique", "rbxassetid://106165041836099", nil, nil, true)
+	-- compass unit first, Unique second, then the rest in their original order
+	local ValueCompass = AddCard(1, "Celestial Compass", Icons.Compass)
+	local ValueUnique = AddCard(2, "Unique", "rbxassetid://106165041836099", nil, nil, true)
+	local ValueGems = AddCard(3, "Gems", Icons.Gems)
 	local ValueTokens = AddCard(4, "Reroll Tokens", Icons.Rerolls)
 	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
@@ -1947,6 +1948,13 @@ local function FindFavoriteButton()
 	return nil
 end
 
+-- Once the pick has become an owned unit the compass item is consumed, so the
+-- code can never be redeemed again. Owned unit == compass flow already done.
+local function CompassUnitOwned()
+	local Pick = Account.CompassUnit()
+	return Pick ~= nil and Account.HasUnit(Pick) == true
+end
+
 -- The compass item in inventory is the only success signal: getting it from
 -- the code means the group join + favorite actually registered on the account.
 local function HasCompassInInventory()
@@ -1976,7 +1984,8 @@ end
 -- dialog appears (group join prompt OR favorite prompt). The ONLY success
 -- signal is the compass item in inventory — IsFavorited() is never checked.
 local function EnsureCompass()
-	if HasCompassInInventory() then
+	-- the unit itself proves the compass was already used; the item is gone
+	if CompassUnitOwned() or HasCompassInInventory() then
 		return true
 	end
 
@@ -2080,7 +2089,8 @@ local CodeDead = {}
 -- One entry point: group join -> Code UI code submit -> handle the prompt.
 -- The compass item in inventory is the only success signal.
 local function GroupAndFavorite()
-	if not Config.JoinGroup then
+	-- no item is left after the pick became a unit, so never re-redeem the code
+	if not Config.JoinGroup or CompassUnitOwned() then
 		return
 	end
 	EnsureCompass()
@@ -2843,6 +2853,15 @@ function Lobby.UseCompass(Force)
 	local Pick = Account.CompassUnit()
 	if not Pick then
 		return false
+	end
+	-- the pick is already a unit: nothing left to redeem or spend
+	if CompassUnitOwned() then
+		if not CompassDone() then
+			State.Compass = true
+			State.CompassDone = true
+			SaveState()
+		end
+		return true
 	end
 	-- the GUI slot is the source of truth, re-checked on every call
 	if CompassUsedInGui() then
@@ -3895,9 +3914,9 @@ function Lobby.Plan()
 		State.HuntDone and "done" or "pending")
 
 	-- compass acquisition: group join -> Code UI compass code -> handle the
-	-- group/favorite prompt. The compass item in inventory is the only signal,
-	-- so nothing else (story/infinite/challenges/hunt) runs until it lands.
-	if not HasCompassInInventory() then
+	-- group/favorite prompt. Once the pick is an owned unit the item is gone and
+	-- the code cannot be redeemed again, so that also counts as done.
+	if not CompassUnitOwned() and not HasCompassInInventory() then
 		GroupAndFavorite()
 		return "social"
 	end
@@ -4020,8 +4039,10 @@ function Lobby.Bootstrap()
 	if BootstrapDone then
 		return true
 	end
-	-- 1) acquire the compass item (group + code) if it has not landed yet
-	if Config.JoinGroup and not CompassDone() and not HasCompassItem() then
+	-- 1) acquire the compass item (group + code) if it has not landed yet;
+	-- an owned compass UNIT means the item was already spent on the pick
+	if Config.JoinGroup and not CompassUnitOwned() and not CompassDone()
+		and not HasCompassItem() then
 		SocialAttempts += 1
 		GroupAndFavorite()
 		if not HasCompassItem() and not CompassDone() then
@@ -4033,7 +4054,7 @@ function Lobby.Bootstrap()
 		end
 	end
 	-- 2) spend the compass item as soon as it is in the inventory
-	if HasCompassItem() and not CompassDone() then
+	if not CompassUnitOwned() and HasCompassItem() and not CompassDone() then
 		Lobby.UseCompass(true)
 		if HasCompassItem() and not CompassDone() then
 			return false
