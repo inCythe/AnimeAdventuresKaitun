@@ -1007,8 +1007,32 @@ function UI.Overlay()
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, Panel)
 
+	-- rainbow gradient from the game's TraitReroll unique Border UIGradient
+	local function RainbowGradient(Target)
+		local Stops = {
+			{ 0, 0.592755, 1, 0.2 }, { 0.1, 0.400755, 1, 0.2 },
+			{ 0.2, 0.208755, 1, 0.2 }, { 0.3, 0.2, 1, 0.383245 },
+			{ 0.4, 0.2, 1, 0.575245 }, { 0.5, 0.2, 1, 0.767245 },
+			{ 0.6, 0.2, 1, 0.959245 }, { 0.7, 0.2, 0.848755, 1 },
+			{ 0.8, 0.2, 0.656755, 1 }, { 0.9, 0.2, 0.464755, 1 },
+			{ 1, 0.2, 0.272755, 1 },
+		}
+		local Points = {}
+		for _, S in ipairs(Stops) do
+			Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
+		end
+		local Gradient = New("UIGradient", {
+			Color = ColorSequence.new(Points),
+			Rotation = 45,
+		}, Target)
+		TweenService:Create(Gradient, TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
+			Rotation = 405,
+		}):Play()
+		return Gradient
+	end
+
 	-- one line: icon, title on the left, value on the right
-	local function AddCard(Order, Caption, IconId, Badge, Tint)
+	local function AddCard(Order, Caption, IconId, Badge, Tint, Rainbow)
 		local Card = New("Frame", {
 			LayoutOrder = Order,
 			BackgroundColor3 = Theme.Card,
@@ -1026,7 +1050,7 @@ function UI.Overlay()
 		}, Card)
 		Round(IconBox, 10)
 		if IconId then
-			New("ImageLabel", {
+			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
 				Size = UDim2.fromOffset(32, 32),
@@ -1034,6 +1058,9 @@ function UI.Overlay()
 				Image = IconId,
 				ScaleType = Enum.ScaleType.Fit,
 			}, IconBox)
+			if Rainbow then
+				RainbowGradient(Image)
+			end
 		else
 			Label(IconBox, {
 				Size = UDim2.fromScale(1, 1),
@@ -1067,7 +1094,7 @@ function UI.Overlay()
 
 	local ValueGems = AddCard(1, "Gems", Icons.Gems)
 	local ValueCompass = AddCard(2, "Celestial Compass", Icons.Compass)
-	local ValueUnique = AddCard(3, "Unique", "rbxassetid://106165041836099")
+	local ValueUnique = AddCard(3, "Unique", "rbxassetid://106165041836099", nil, nil, true)
 	local ValueTokens = AddCard(4, "Reroll Tokens", Icons.Rerolls)
 	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
