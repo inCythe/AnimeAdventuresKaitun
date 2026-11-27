@@ -1049,9 +1049,10 @@ function UI.Overlay()
 		}, Card)
 		Round(IconBox, 10)
 		if IconId then
-			-- exact game item-frame structure (TraitReroll UseItemFrame.ItemFrame2):
-			-- grey BG -> BackgroundGlow -> BorderFrame(0.925, aspect 1) with
-			-- bordershadow + pattern + line layers -> the icon itself
+			-- exact TraitReroll UseItemFrame.ItemFrame2 icon frame:
+			-- BG(grey) -> BackgroundGlow -> BorderFrame(0.925, aspect 1, corner 0.065)
+			--   -> bordershadow(130155782712929) -> line(0.9) -> pattern(86044272558886)
+			--   -> inner fill(76373203609129 @0.5) -> the icon
 			IconBox.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
 			New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
@@ -1067,19 +1068,33 @@ function UI.Overlay()
 				Size = UDim2.fromScale(0.925, 0.925),
 				BackgroundTransparency = 1,
 			}, IconBox)
-			Round(BorderFrame, 8)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
 			New("UIAspectRatioConstraint", { AspectRatio = 1 }, BorderFrame)
 			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
 				Image = "rbxassetid://130155782712929", -- bordershadow
 			}, BorderFrame)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame:FindFirstChild("bordershadow") or BorderFrame)
+			New("ImageLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromScale(0.9, 0.9),
+				BackgroundTransparency = 1,
+				Image = "",
+				ImageColor3 = Color3.new(1, 1, 1),
+			}, BorderFrame)
+			New("UIStroke", {
+				Color = Color3.new(1, 1, 1), Thickness = 0.035, Transparency = 0.8,
+			}, BorderFrame)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
 			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
 				Image = "rbxassetid://86044272558886", -- pattern
 				ImageColor3 = Color3.fromRGB(168, 168, 168),
 			}, BorderFrame)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame:FindFirstChild("pattern") or BorderFrame)
 			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
@@ -1087,6 +1102,7 @@ function UI.Overlay()
 				ImageColor3 = Color3.fromRGB(150, 150, 150),
 				ImageTransparency = 0.5,
 			}, BorderFrame)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
