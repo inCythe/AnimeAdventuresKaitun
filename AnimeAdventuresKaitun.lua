@@ -1050,32 +1050,44 @@ function UI.Overlay()
 		}, Card)
 		Round(IconBox, 10)
 		if IconId then
-			-- game item-frame background (TraitReroll UseTokenFrame BG / EvolvedGlow)
-			local FrameBg = New("ImageLabel", {
+			-- exact game item-frame structure (TraitReroll UseItemFrame.ItemFrame2):
+			-- grey BG -> BackgroundGlow -> BorderFrame(0.925, aspect 1) with
+			-- bordershadow + pattern + line layers -> the icon itself
+			IconBox.BackgroundColor3 = Color3.fromRGB(95, 95, 95)
+			New("ImageLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
-				Image = "rbxassetid://76373203609129",
-				ScaleType = Enum.ScaleType.Stretch,
+				Image = "rbxassetid://127994770257821", -- EvolvedGlow
+				ImageTransparency = 0.8,
 			}, IconBox)
-			Round(FrameBg, 10)
-			local GlowPink = New("ImageLabel", {
+			local BorderFrame = New("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromScale(0.925, 0.925),
+				BackgroundTransparency = 1,
+			}, IconBox)
+			Round(BorderFrame, 8)
+			New("UIAspectRatioConstraint", { AspectRatio = 1 }, BorderFrame)
+			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
-				Image = "rbxassetid://105669515169727",
-				ImageColor3 = Color3.fromRGB(190, 80, 255),
-				ImageTransparency = 0.35,
-				ScaleType = Enum.ScaleType.Stretch,
-			}, IconBox)
-			Round(GlowPink, 10)
-			local GlowBlue = New("ImageLabel", {
+				Image = "rbxassetid://130155782712929", -- bordershadow
+			}, BorderFrame)
+			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
-				Image = "rbxassetid://105669515169727",
-				ImageColor3 = Color3.fromRGB(70, 160, 255),
-				ImageTransparency = 0.45,
-				ScaleType = Enum.ScaleType.Stretch,
-			}, IconBox)
-			Round(GlowBlue, 10)
+				Image = "rbxassetid://86044272558886", -- pattern
+				ImageColor3 = Color3.fromRGB(168, 168, 168),
+			}, BorderFrame)
+			New("ImageLabel", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Image = "rbxassetid://76373203609129", -- inner fill
+				ImageColor3 = Color3.fromRGB(150, 150, 150),
+				ImageTransparency = 0.5,
+			}, BorderFrame)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
@@ -1083,7 +1095,7 @@ function UI.Overlay()
 				BackgroundTransparency = 1,
 				Image = IconId,
 				ScaleType = Enum.ScaleType.Fit,
-			}, IconBox)
+			}, BorderFrame)
 			if Rainbow then
 				RainbowGradient(Image)
 			end
@@ -1125,6 +1137,13 @@ function UI.Overlay()
 	local ValueRemnants = AddCard(5, "Star Remnants", Icons.Remnants)
 	local ValueLimited = AddCard(6, "Limited Remnants", Icons.Remnants)
 
+	-- one font for every stat/card label
+	for _, Item in ipairs(Panel:GetDescendants()) do
+		if Item:IsA("TextLabel") then
+			Item.Font = Enum.Font.GothamBold
+		end
+	end
+
 	-- progress bars ------------------------------------------------------------
 	local Bars = New("Frame", {
 		LayoutOrder = 4,
@@ -1146,13 +1165,14 @@ function UI.Overlay()
 			Text = Caption,
 		})
 		local Percent = Label(Bars, {
-			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, -18, 0, Y),
-			Size = UDim2.new(0.5, -18, 0, 16),
-			Font = Enum.Font.GothamMedium,
-			TextSize = 14,
-			TextXAlignment = Enum.TextXAlignment.Right,
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(0.5, 0, 0, Y + 1),
+			Size = UDim2.new(1, -36, 0, 20),
+			Font = Enum.Font.GothamBold,
+			TextSize = 15,
+			TextXAlignment = Enum.TextXAlignment.Center,
 			Text = "",
+			ZIndex = 3,
 		})
 		-- game health-bar style: dark navy track, cyan -> blue gradient fill
 		local Track = New("Frame", {
@@ -1238,7 +1258,7 @@ function UI.Overlay()
 
 		-- header + pill (challenge countdown lives in the header time)
 		local ChallengeRemain = 1800 - (os.time() % 1800)
-		Sub.Text = ("%s   ·   %02d:%02d:%02d   ·   challenges %02d:%02d"):format(
+		Sub.Text = ("%s   ·   %02d:%02d:%02d   ·   Challenges %02d:%02d"):format(
 			Player.Name, math.floor(Up / 3600), math.floor(Up / 60) % 60, Up % 60,
 			math.floor(ChallengeRemain / 60), math.floor(ChallengeRemain % 60))
 		local Running = Config.Enabled ~= false
