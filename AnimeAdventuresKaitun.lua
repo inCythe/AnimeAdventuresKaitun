@@ -1047,74 +1047,62 @@ function UI.Overlay()
 			BackgroundColor3 = Color3.fromRGB(10, 12, 22), -- dark token background
 			BorderSizePixel = 0,
 		}, Card)
-		Round(IconBox, 10)
+		Round(IconBox, 4) -- scale corner 0.15 of the 40px token frame
 		if IconId then
-			-- animated rainbow border (matches the TraitReroll token glow)
-			local BorderStroke = New("UIStroke", {
-				Color = Color3.new(1, 1, 1), Thickness = 2, Transparency = 0.05,
-			}, IconBox)
-			RainbowGradient(BorderStroke)
-			-- exact TraitReroll UseItemFrame.ItemFrame2 icon frame:
-			-- BG(grey) -> BackgroundGlow -> BorderFrame(0.925, aspect 1, corner 0.065)
-			--   -> bordershadow(130155782712929) -> line(0.9) -> pattern(86044272558886)
-			--   -> inner fill(76373203609129 @0.5) -> the icon
-			New("ImageLabel", {
+			-- exact TraitReroll SHOP TOKEN frame (trait_reroll_tokens__gift):
+			-- dark Bg(22,22,22)+pattern -> EvolvedGlow(105669515169727) with the
+			-- 11-stop rainbow UIGradient @ -45 -> icon. No clipping: every layer
+			-- is centered and aspect-locked.
+			local Token = New("Frame", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
 				Size = UDim2.fromScale(1, 1),
-				BackgroundTransparency = 1,
-				Image = "rbxassetid://127994770257821", -- EvolvedGlow
-				ImageTransparency = 0.8,
+				BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+				BorderSizePixel = 0,
 			}, IconBox)
-			local BorderFrame = New("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromScale(0.925, 0.925),
-				BackgroundTransparency = 1,
-			}, IconBox)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
-			New("UIAspectRatioConstraint", { AspectRatio = 1 }, BorderFrame)
-			New("ImageLabel", {
-				Size = UDim2.fromScale(1, 1),
-				BackgroundTransparency = 1,
-				Image = "rbxassetid://130155782712929", -- bordershadow
-			}, BorderFrame)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame:FindFirstChild("bordershadow") or BorderFrame)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token)
+			New("UIAspectRatioConstraint", { AspectRatio = 1 }, Token)
 			New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromScale(0.9, 0.9),
-				BackgroundTransparency = 1,
-				Image = "",
-				ImageColor3 = Color3.new(1, 1, 1),
-			}, BorderFrame)
-			New("UIStroke", {
-				Color = Color3.new(1, 1, 1), Thickness = 0.035, Transparency = 0.8,
-			}, BorderFrame)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
-			New("ImageLabel", {
 				Size = UDim2.fromScale(1, 1),
 				BackgroundTransparency = 1,
 				Image = "rbxassetid://86044272558886", -- pattern
-				ImageColor3 = Color3.fromRGB(168, 168, 168),
-			}, BorderFrame)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame:FindFirstChild("pattern") or BorderFrame)
-			New("ImageLabel", {
-				Size = UDim2.fromScale(1, 1),
+			}, Token)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token:FindFirstChild("ImageLabel") or Token)
+			local Glow = New("ImageLabel", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.fromScale(0.5, 0.5),
+				Size = UDim2.fromScale(1.4, 1.4),
 				BackgroundTransparency = 1,
-				Image = "rbxassetid://76373203609129", -- inner fill
-				ImageColor3 = Color3.fromRGB(150, 150, 150),
-				ImageTransparency = 0.5,
-			}, BorderFrame)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
+				Image = "rbxassetid://105669515169727", -- EvolvedGlow
+				ImageColor3 = Color3.new(1, 1, 1),
+				ZIndex = 0,
+			}, Token)
+			-- live-verified rainbow gradient (11 keypoints, rotation -45)
+			local RainbowStops = {
+				{ 0, 0.2, 1, 0.68326 }, { 0.1, 0.2, 1, 0.87526 },
+				{ 0.2, 0.2, 0.93274, 1 }, { 0.3, 0.2, 0.74074, 1 },
+				{ 0.4, 0.2, 0.54874, 1 }, { 0.5, 0.2, 0.35674, 1 },
+				{ 0.6, 0.23526, 0.2, 1 }, { 0.7, 0.42726, 0.2, 1 },
+				{ 0.8, 0.61926, 0.2, 1 }, { 0.9, 0.81126, 0.2, 1 },
+				{ 1, 1, 0.2, 0.99674 },
+			}
+			local Points = {}
+			for _, S in ipairs(RainbowStops) do
+				Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
+			end
+			New("UIGradient", { Color = ColorSequence.new(Points), Rotation = -45 }, Glow)
+			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Glow)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromOffset(32, 32),
+				Size = UDim2.fromScale(0.8, 0.8),
 				BackgroundTransparency = 1,
 				Image = IconId,
 				ScaleType = Enum.ScaleType.Fit,
-			}, BorderFrame)
+				ZIndex = 1,
+			}, Token)
 			if Rainbow then
 				RainbowGradient(Image)
 			end
