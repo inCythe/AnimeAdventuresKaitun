@@ -1030,6 +1030,32 @@ function UI.Overlay()
 		return Gradient
 	end
 
+	-- exact live rainbow gradient from TraitReroll MOCK BG.Border (rotation 45,
+	-- animated). Applied to any UIGradient named "Border" after cloning.
+	local LIVE_RAINBOW = {
+		{ 0, 0.2, 1, 0.964657 }, { 0.1, 0.2, 0.843343, 1 },
+		{ 0.2, 0.2, 0.651343, 1 }, { 0.3, 0.2, 0.459343, 1 },
+		{ 0.4, 0.2, 0.267343, 1 }, { 0.5, 0.324657, 0.2, 1 },
+		{ 0.6, 0.516657, 0.2, 1 }, { 0.7, 0.708657, 0.2, 1 },
+		{ 0.8, 0.900657, 0.2, 1 }, { 0.9, 1, 0.2, 0.907343 },
+		{ 1, 1, 0.2, 0.715343 },
+	}
+	local function AnimateTokenBorders(Instance)
+		for _, Object in ipairs(Instance:GetDescendants()) do
+			if Object:IsA("UIGradient") and Object.Name == "Border" then
+				local Points = {}
+				for _, S in ipairs(LIVE_RAINBOW) do
+					Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
+				end
+				Object.Color = ColorSequence.new(Points)
+				Object.Rotation = 45
+				TweenService:Create(Object, TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
+					Rotation = 405,
+				}):Play()
+			end
+		end
+	end
+
 	-- one line: icon, title on the left, value on the right
 	local function AddCard(Order, Caption, IconId, Badge, Tint, Rainbow)
 		local Card = New("Frame", {
@@ -1047,53 +1073,57 @@ function UI.Overlay()
 			BackgroundColor3 = Color3.fromRGB(10, 12, 22), -- dark token background
 			BorderSizePixel = 0,
 		}, Card)
-		Round(IconBox, 4) -- scale corner 0.15 of the 40px token frame
+		Round(IconBox, 4)
 		if IconId then
-			-- exact TraitReroll SHOP TOKEN frame (trait_reroll_tokens__gift):
-			-- dark Bg(22,22,22)+pattern -> EvolvedGlow(105669515169727) with the
-			-- 11-stop rainbow UIGradient @ -45 -> icon. No clipping: every layer
-			-- is centered and aspect-locked.
-			local Token = New("Frame", {
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromScale(1, 1),
-				BackgroundColor3 = Color3.fromRGB(22, 22, 22),
-				BorderSizePixel = 0,
-			}, IconBox)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token)
-			New("UIAspectRatioConstraint", { AspectRatio = 1 }, Token)
-			New("ImageLabel", {
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromScale(1, 1),
-				BackgroundTransparency = 1,
-				Image = "rbxassetid://86044272558886", -- pattern
-			}, Token)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token:FindFirstChild("ImageLabel") or Token)
-			local Glow = New("ImageLabel", {
-				AnchorPoint = Vector2.new(0.5, 0.5),
-				Position = UDim2.fromScale(0.5, 0.5),
-				Size = UDim2.fromScale(1.4, 1.4),
-				BackgroundTransparency = 1,
-				Image = "rbxassetid://105669515169727", -- EvolvedGlow
-				ImageColor3 = Color3.new(1, 1, 1),
-				ZIndex = 0,
-			}, Token)
-			-- live-verified rainbow gradient (11 keypoints, rotation -45)
-			local RainbowStops = {
-				{ 0, 0.2, 1, 0.68326 }, { 0.1, 0.2, 1, 0.87526 },
-				{ 0.2, 0.2, 0.93274, 1 }, { 0.3, 0.2, 0.74074, 1 },
-				{ 0.4, 0.2, 0.54874, 1 }, { 0.5, 0.2, 0.35674, 1 },
-				{ 0.6, 0.23526, 0.2, 1 }, { 0.7, 0.42726, 0.2, 1 },
-				{ 0.8, 0.61926, 0.2, 1 }, { 0.9, 0.81126, 0.2, 1 },
-				{ 1, 1, 0.2, 0.99674 },
-			}
-			local Points = {}
-			for _, S in ipairs(RainbowStops) do
-				Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
+			-- clone the EXACT BG frame from TraitReroll MOCK token, then fix
+			-- ZIndexes (the source uses -1/0 which can hide behind the card)
+			local Cloned = false
+			pcall(function()
+				local Gui = PlayerGui:FindFirstChild("TraitReroll")
+				local Grid = Gui and Gui:FindFirstChild("grid")
+				local UseToken = Grid and Grid:FindFirstChild("UseTokenFrame")
+				local Mock = UseToken and UseToken:FindFirstChild("trait_reroll_tokens__MOCK")
+				local Source = Mock and Mock:FindFirstChild("BG")
+				if not Source then
+					return
+				end
+				local Bg = Source:Clone()
+				Bg.Parent = IconBox
+				Bg.AnchorPoint = Vector2.new(0.5, 0.5)
+				Bg.Position = UDim2.fromScale(0.5, 0.5)
+				Bg.Size = UDim2.fromScale(1, 1)
+				Bg.ZIndex = 2
+				for _, Object in ipairs(Bg:GetDescendants()) do
+					if Object:IsA("GuiObject") then
+						Object.ZIndex = Object.ZIndex + 3
+					end
+				end
+				AnimateTokenBorders(Bg)
+				Cloned = true
+			end)
+			if not Cloned then
+				local Token = New("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(22, 22, 22),
+					BorderSizePixel = 0,
+				}, IconBox)
+				New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token)
+				New("UIAspectRatioConstraint", { AspectRatio = 1 }, Token)
+				New("ImageLabel", {
+					Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+					Image = "rbxassetid://86044272558886",
+				}, Token)
+				local Glow = New("ImageLabel", {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.fromScale(1.4, 1.4), BackgroundTransparency = 1,
+					Image = "rbxassetid://105669515169727", ZIndex = 0,
+				}, Token)
+				local Pts = {}
+				for _, S in ipairs(LIVE_RAINBOW) do
+					Pts[#Pts + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
+				end
+				New("UIGradient", { Color = ColorSequence.new(Pts), Rotation = 45 }, Glow)
 			end
-			New("UIGradient", { Color = ColorSequence.new(Points), Rotation = -45 }, Glow)
-			New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Glow)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
@@ -1101,8 +1131,8 @@ function UI.Overlay()
 				BackgroundTransparency = 1,
 				Image = IconId,
 				ScaleType = Enum.ScaleType.Fit,
-				ZIndex = 1,
-			}, Token)
+				ZIndex = 20,
+			}, IconBox)
 			if Rainbow then
 				RainbowGradient(Image)
 			end
