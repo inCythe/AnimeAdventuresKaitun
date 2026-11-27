@@ -1948,22 +1948,28 @@ end
 -- The profile's redeemed_codes table is the only source of truth. If the
 -- social compass code is already there, nothing to do; otherwise retry the
 -- group join + favorite on this lobby visit. No saved-file flags involved.
--- Social requirement is satisfied when the profile shows the code redeemed,
--- OR when the account is verifiably in the group AND favorited the game.
--- Live-verified checks: Player:IsInGroup(10611639) and
--- AvatarEditorService:GetFavorite(placeId, Asset) both return true.
+-- The profile's redeemed_codes is the only authoritative source for the
+-- compass code. Being in the group / favorited does NOT mean it was redeemed —
+-- the server can keep replying needs_social — so the compass item in inventory
+-- is the real "done" signal. Group/favorite UI is skipped once both are true.
+local function HasCompassInInventory()
+	local P = Account.Profile()
+	local Items = type(P.inventory) == "table"
+		and type(P.inventory.normal_items) == "table"
+		and P.inventory.normal_items or {}
+	return (tonumber(Items[Config.CompassId]) or 0) > 0
+end
+
 local function SocialReady()
-	if CompassCodeRedeemed() then
-		return true
-	end
-	if not Config.JoinGroup then
-		return true
-	end
-	return IsInGroup() and IsFavorited()
+	return CompassCodeRedeemed() or HasCompassInInventory()
 end
 
 local function GroupAndFavorite()
 	if not Config.JoinGroup or SocialReady() then
+		return
+	end
+	-- skip the UI entirely when the group join + favorite are already done
+	if IsInGroup() and IsFavorited() then
 		return
 	end
 	-- throttle attempts to once a minute; Lobby.Plan re-calls this every visit
@@ -2057,7 +2063,13 @@ function Lobby.RedeemCodes()
 						Log("code %s: rejected (invalid, expired or already redeemed)", Code)
 					end
 				else
-					Log("code %s: %s", Code, tostring(Reply))
+					-- needs_social is disregarded while the compass is still
+					-- missing — keep firing this remote on every plan tick
+					if IsSocial and tostring(Reply) == "needs_social" then
+						Log("code %s: needs_social (ignored - compass not owned yet)", Code)
+					else
+						Log("code %s: %s", Code, tostring(Reply))
+					end
 					if tostring(Reply) ~= "needs_social" and not IsSocial then
 						CodeDead[Code] = true
 					end
@@ -3749,9 +3761,11 @@ function Lobby.Plan()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
 
-	-- nothing else until social is satisfied: code redeemed in the profile,
-	-- or (in group AND favorited) verified live. Re-run group/favorite and the
-	-- code redeem each planning tick; no story/infinite/challenges/hunt yet.
+	-- no compass in inventory yet: keep firing the redeem remote every tick,
+	-- even if the server replies needs_social (it can keep saying that while
+	-- group/favorite are already true). The group/favorite UI is skipped there.
+	-- Do nothing else — no story/infinite/challenges/hunt — until the compass
+	-- item actually appears.
 	if not SocialReady() then
 		GroupAndFavorite()
 		Lobby.RedeemCodes()
