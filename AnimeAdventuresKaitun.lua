@@ -1300,9 +1300,15 @@ function UI.Overlay()
 		-- cards
 		local CompassUnit = Account.CompassUnit()
 		local CompassOwned = CompassUnit and Account.HasUnit(CompassUnit) or false
-		local CompassColor = CompassOwned and Theme.Good or Theme.Bad
+		-- the pick is stored on the profile as soon as it is chosen, while the
+		-- item can stay in inventory; both mean the compass is already used
+		local SavedPick = Account.Profile()._celestial_compass_pick
+		local CompassPicked = CompassUnit ~= nil and type(SavedPick) == "string"
+			and SavedPick ~= "" and SavedPick:lower() == tostring(CompassUnit):lower()
+		local CompassChosen = CompassOwned or CompassPicked
+		local CompassColor = CompassChosen and Theme.Good or Theme.Bad
 		local CompassCount = tonumber(Items[Config.CompassId])
-		if CompassOwned then
+		if CompassChosen then
 			ValueCompass.Text = Pretty(Account.UnitName(CompassUnit))
 			ValueCompass.TextColor3 = CompassColor
 		elseif CompassCount and CompassCount > 0 then
