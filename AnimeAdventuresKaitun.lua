@@ -1897,13 +1897,62 @@ local function FindFavoriteButton()
 	return nil
 end
 
--- The game only offers a favorite prompt from the in-world Code UI, so walk
--- to _codes, submit FavoriteCode, then press the prompt button.
-local function FavoriteViaCode(Force)
-	if IsFavorited() and not Force then
+-- The compass item in inventory is the only success signal: getting it from
+-- the code means the group join + favorite actually registered on the account.
+local function HasCompassInInventory()
+	local P = Account.Profile()
+	local Items = type(P.inventory) == "table"
+		and type(P.inventory.normal_items) == "table"
+		and P.inventory.normal_items or {}
+	return (tonumber(Items[Config.CompassId]) or 0) > 0
+end
+
+-- Hide the in-world Code UI once we are done with it.
+local function CloseCodesUi()
+	local Gui = PlayerGui:FindFirstChild("Codes")
+	if not Gui then
+		return
+	end
+	pcall(function()
+		Gui.Enabled = false
+	end)
+	local Window = Gui:FindFirstChild("Window")
+	if Window then
+		pcall(function()
+			Window.Visible = false
+		end)
+	end
+end
+
+-- Get the compass item: group join -> Code UI code submit -> handle whichever
+-- dialog appears (group join prompt OR favorite prompt). The ONLY success
+-- signal is the compass item in inventory — IsFavorited() is never checked.
+local function EnsureCompass()
+	if HasCompassInInventory() then
 		return true
 	end
-	LogT("Group", "favoriting through the Code UI")
+
+	-- 1) group join: prompt and press the join button if not in the group
+	if not IsInGroup() then
+		LogT("Group", "not in group - prompting join")
+		task.spawn(function()
+			pcall(function()
+				GroupService:PromptJoinAsync(Config.GroupId)
+			end)
+		end)
+		local Deadline = os.clock() + 12
+		while os.clock() < Deadline and not IsInGroup() do
+			local Button = FindJoinButton()
+			if Button then
+				SpamButton(Button, IsInGroup, 2)
+			else
+				task.wait(0.1)
+			end
+		end
+		Unselect()
+	end
+
+	-- 2) walk to the in-world Code UI and submit the compass code ONCE
 	local Character = Player.Character or Player.CharacterAdded:Wait()
 	local Root = Character:WaitForChild("HumanoidRootPart")
 	local CodesPart = workspace:FindFirstChild("_codes")
@@ -1935,7 +1984,10 @@ local function FavoriteViaCode(Force)
 		task.wait(0.1)
 	end
 
-	local EnterBox = Window.Enter:WaitForChild("Type")
+	local EnterBox = Window.Enter:FindFirstChild("Type")
+	if not EnterBox then
+		return false
+	end
 	EnterBox.Text = Config.FavoriteCode
 	task.wait(0.1)
 	if FireSignal then
@@ -1944,105 +1996,52 @@ local function FavoriteViaCode(Force)
 		end)
 	end
 	task.wait(0.5)
-
-	local YesButton = Window.ButtonHolder:WaitForChild("Yes")
-	local YesDeadline = os.clock() + 5
-	while os.clock() < YesDeadline do
-		if FindFavoriteButton() then
-			break
-		end
-		if not ButtonAlive(YesButton) or not Window.Parent or not Window.Visible then
-			break
-		end
-		PressButton(YesButton)
-		task.wait(0.1)
+	local YesButton = Window.ButtonHolder and Window.ButtonHolder:FindFirstChild("Yes")
+	if YesButton and ButtonAlive(YesButton) then
+		PressButton(YesButton) -- press once
 	end
 	Unselect()
 
-	local Deadline = os.clock() + 15
-	while os.clock() < Deadline do
-		if IsFavorited() then
-			Unselect()
+	-- 3) handle the dialog that appears: group join prompt OR favorite prompt
+	local PromptDeadline = os.clock() + 20
+	while os.clock() < PromptDeadline do
+		if HasCompassInInventory() then
+			CloseCodesUi()
 			return true
 		end
-		local Button = FindFavoriteButton()
-		if Button then
-			SpamButton(Button, IsFavorited, 2)
+		-- group join prompt: press its "1-<name>" button
+		local JoinBtn = FindJoinButton()
+		if JoinBtn then
+			LogT("Group", "group join prompt popped - pressing join")
+			SpamButton(JoinBtn, IsInGroup, 2)
+			Unselect()
 		else
-			task.wait(0.1)
+			-- favorite prompt: press its Yes button ("2")
+			local FavBtn = FindFavoriteButton()
+			if FavBtn then
+				LogT("Group", "favorite prompt popped - pressing Yes")
+				SpamButton(FavBtn, function() return true end, 2)
+				Unselect()
+			else
+				task.wait(0.2)
+			end
 		end
 	end
-	Unselect()
-	return IsFavorited()
+
+	CloseCodesUi()
+	return HasCompassInInventory()
 end
 
 -- codes the server ignored this session (never saved to disk)
 local CodeDead = {}
-local LastSocialRetry = -60 -- os.clock() of last attempt; -60 makes the first call immediate
-local SOCIAL_RETRY_WAIT = 30 -- seconds between group/favorite re-prompts
-local ForceSocialPrompt = false -- set when needs_social comes back and no compass is owned
 
--- The social-gated compass code (CELESTIALCOMPASSU21) is the real proof that
--- the group join + favorite actually registered on the account. Reading the
--- game's own redeemed_codes (list or map form) avoids any saved-file ledger.
-local function CompassCodeRedeemed()
-	local Raw = Account.Profile().redeemed_codes
-	if type(Raw) == "table" then
-		for Key, Value in pairs(Raw) do
-			local Code = type(Value) == "string" and Value or Key
-			if tostring(Code):upper() == tostring(Config.FavoriteCode):upper() then
-				return true
-			end
-		end
-	end
-	return false
-end
-
--- The profile's redeemed_codes table is the only source of truth. If the
--- social compass code is already there, nothing to do; otherwise retry the
--- group join + favorite on this lobby visit. No saved-file flags involved.
--- The profile's redeemed_codes is the only authoritative source for the
--- compass code. Being in the group / favorited does NOT mean it was redeemed —
--- the server can keep replying needs_social — so the compass item in inventory
--- is the real "done" signal. Group/favorite UI is skipped once both are true.
-local function HasCompassInInventory()
-	local P = Account.Profile()
-	local Items = type(P.inventory) == "table"
-		and type(P.inventory.normal_items) == "table"
-		and P.inventory.normal_items or {}
-	return (tonumber(Items[Config.CompassId]) or 0) > 0
-end
-
-local function SocialReady()
-	return CompassCodeRedeemed() or HasCompassInInventory()
-end
-
+-- One entry point: group join -> Code UI code submit -> handle the prompt.
+-- The compass item in inventory is the only success signal.
 local function GroupAndFavorite()
-	if not Config.JoinGroup or SocialReady() then
+	if not Config.JoinGroup then
 		return
 	end
-	-- even if the group/favorite checks already pass, keep re-running them on
-	-- a throttle while the code is unredeemed: the server can still say
-	-- needs_social and a fresh prompt sometimes makes it register.
-	-- throttle attempts to once a minute; Lobby.Plan re-calls this every visit
-	-- until the social checks pass
-	if os.clock() - LastSocialRetry < SOCIAL_RETRY_WAIT then
-		return
-	end
-	LastSocialRetry = os.clock()
-
-	-- JoinGroup returns immediately when already in the group. When needs_social
-	-- was reported, force a fresh favorite prompt even if GetFavorite says true.
-	local Joined = JoinGroup()
-	local Favorited = false
-	if Joined then
-		task.wait(1)
-		Favorited = FavoriteViaCode(ForceSocialPrompt)
-	end
-	ForceSocialPrompt = false
-	LogT("Group", "group=%s favorite=%s | live group=%s fav=%s (code still not redeemed)",
-		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done",
-		tostring(IsInGroup()), tostring(IsFavorited()))
+	EnsureCompass()
 end
 
 -- ============================================================================
@@ -2093,18 +2092,20 @@ function Lobby.RedeemCodes()
 	local Redeemed = RedeemedSet()
 	local Seen = {}
 	local Now, Locked = 0, 0
+	local SocialCode = tostring(Config.FavoriteCode):upper()
 	for _, Entry in ipairs(Config.Codes) do
 		local Code = tostring(type(Entry) == "table" and Entry[1] or Entry):upper()
+		-- the social compass code is handled by EnsureCompass() through the
+		-- Code UI (group join + favorite prompt) - never via this remote
+		if Code == SocialCode then
+			continue
+		end
 		local MinLevel = type(Entry) == "table" and tonumber(Entry[2]) or nil
-		-- always keep retrying the social compass code until the profile shows it
-		local IsSocial = Code == tostring(Config.FavoriteCode):upper()
-		if not Seen[Code] and not Redeemed[Code] and (IsSocial or not CodeDead[Code]) then
+		if not Seen[Code] and not Redeemed[Code] and not CodeDead[Code] then
 			Seen[Code] = true
 			if MinLevel and not Config.ForceCodes and Level < MinLevel then
 				Locked = Locked + 1
 			else
-				-- redeem_code answers nil/""/true for invalid AND already
-				-- redeemed, so only the game's redeemed_codes ledger decides
 				local Ok, Reply = Util.Call(10, InvokeServer, "redeem_code", Code)
 				if not Ok then
 					Log("code %s: request failed (%s)", Code, tostring(Reply))
@@ -2114,26 +2115,12 @@ function Lobby.RedeemCodes()
 						Now += 1
 						Log("code %s redeemed", Code)
 					else
-						if not IsSocial then CodeDead[Code] = true end
+						CodeDead[Code] = true
 						Log("code %s: rejected (invalid, expired or already redeemed)", Code)
 					end
 				else
-					-- needs_social is only ignored when the compass is already
-					-- owned. Otherwise force a fresh group/favorite prompt and
-					-- keep firing the redeem remote on every plan tick.
-					local SocialReply = IsSocial and tostring(Reply) == "needs_social"
-					if SocialReply then
-						if HasCompassInInventory() then
-							Log("code %s: needs_social (ignored - compass already owned)", Code)
-						else
-							ForceSocialPrompt = true
-							LastSocialRetry = -60 -- allow an immediate re-prompt
-							Log("code %s: needs_social - re-prompting group/favorite and retrying", Code)
-						end
-					else
-						Log("code %s: %s", Code, tostring(Reply))
-					end
-					if not SocialReply and not IsSocial then
+					Log("code %s: %s", Code, tostring(Reply))
+					if tostring(Reply) ~= "needs_social" then
 						CodeDead[Code] = true
 					end
 				end
@@ -3824,14 +3811,11 @@ function Lobby.Plan()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
 
-	-- no compass in inventory yet: keep firing the redeem remote every tick,
-	-- even if the server replies needs_social (it can keep saying that while
-	-- group/favorite are already true). The group/favorite UI is skipped there.
-	-- Do nothing else — no story/infinite/challenges/hunt — until the compass
-	-- item actually appears.
-	if not SocialReady() then
+	-- compass acquisition: group join -> Code UI compass code -> handle the
+	-- group/favorite prompt. The compass item in inventory is the only signal,
+	-- so nothing else (story/infinite/challenges/hunt) runs until it lands.
+	if not HasCompassInInventory() then
 		GroupAndFavorite()
-		Lobby.RedeemCodes()
 		return "social"
 	end
 
