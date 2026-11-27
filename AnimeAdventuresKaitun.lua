@@ -1040,20 +1040,76 @@ function UI.Overlay()
 		{ 0.8, 0.900657, 0.2, 1 }, { 0.9, 1, 0.2, 0.907343 },
 		{ 1, 1, 0.2, 0.715343 },
 	}
-	local function AnimateTokenBorders(Instance)
-		for _, Object in ipairs(Instance:GetDescendants()) do
-			if Object:IsA("UIGradient") and Object.Name == "Border" then
-				local Points = {}
-				for _, S in ipairs(LIVE_RAINBOW) do
-					Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
-				end
-				Object.Color = ColorSequence.new(Points)
-				Object.Rotation = 45
-				TweenService:Create(Object, TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
-					Rotation = 405,
-				}):Play()
-			end
+	-- Add the live-verified rainbow UIGradient and animate it (rotation 45->405).
+	local function AddTokenBorder(Instance)
+		local Points = {}
+		for _, S in ipairs(LIVE_RAINBOW) do
+			Points[#Points + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
 		end
+		local Gradient = New("UIGradient", {
+			Name = "Border", Color = ColorSequence.new(Points), Rotation = 45,
+		}, Instance)
+		TweenService:Create(Gradient, TweenInfo.new(6, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
+			Rotation = 405,
+		}):Play()
+		return Gradient
+	end
+
+	-- Rebuild the exact TraitReroll MOCK token BG from inspected properties.
+	-- All ZIndexes are shifted to positive so they never hide behind the card.
+	local function BuildTokenBg(Parent)
+		local Bg = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(95, 95, 95),
+			BackgroundTransparency = 0.3, ZIndex = 2,
+		}, Parent)
+		New("UIAspectRatioConstraint", { AspectRatio = 1 }, Bg)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, Bg)
+		New("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 0.03, ZIndex = 2 }, Bg)
+		AddTokenBorder(Bg)
+
+		local BorderFrame = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(0.925, 0.925), BackgroundColor3 = Color3.new(1, 1, 1),
+			BackgroundTransparency = 0, ZIndex = 4,
+		}, Bg)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, BorderFrame)
+		New("UIAspectRatioConstraint", { AspectRatio = 1 }, BorderFrame)
+		AddTokenBorder(BorderFrame)
+
+		local Inner = New("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(0.925, 0.925), BackgroundColor3 = Color3.fromRGB(10, 10, 10),
+			BackgroundTransparency = 0, ZIndex = 4,
+		}, BorderFrame)
+		New("UIAspectRatioConstraint", { AspectRatio = 1 }, Inner)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, Inner)
+
+		local Shadow = New("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+			Image = "rbxassetid://130155782712929", ZIndex = 5,
+		}, Inner)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, Shadow)
+		AddTokenBorder(Shadow)
+
+		local Line = New("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(0.9, 0.9), BackgroundTransparency = 1,
+			Image = "", ImageColor3 = Color3.new(1, 1, 1), ZIndex = 4,
+		}, Inner)
+		New("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 0.035, Transparency = 0.8, ZIndex = 4 }, Line)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, Line)
+
+		local Pattern = New("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+			Image = "rbxassetid://86044272558886",
+			ImageColor3 = Color3.fromRGB(168, 168, 168), ZIndex = 3,
+		}, Inner)
+		New("UICorner", { CornerRadius = UDim.new(0, 0.065) }, Pattern)
+		AddTokenBorder(Pattern)
+		return Bg
 	end
 
 	-- one line: icon, title on the left, value on the right
@@ -1075,55 +1131,8 @@ function UI.Overlay()
 		}, Card)
 		Round(IconBox, 4)
 		if IconId then
-			-- clone the EXACT BG frame from TraitReroll MOCK token, then fix
-			-- ZIndexes (the source uses -1/0 which can hide behind the card)
-			local Cloned = false
-			pcall(function()
-				local Gui = PlayerGui:FindFirstChild("TraitReroll")
-				local Grid = Gui and Gui:FindFirstChild("grid")
-				local UseToken = Grid and Grid:FindFirstChild("UseTokenFrame")
-				local Mock = UseToken and UseToken:FindFirstChild("trait_reroll_tokens__MOCK")
-				local Source = Mock and Mock:FindFirstChild("BG")
-				if not Source then
-					return
-				end
-				local Bg = Source:Clone()
-				Bg.Parent = IconBox
-				Bg.AnchorPoint = Vector2.new(0.5, 0.5)
-				Bg.Position = UDim2.fromScale(0.5, 0.5)
-				Bg.Size = UDim2.fromScale(1, 1)
-				Bg.ZIndex = 2
-				for _, Object in ipairs(Bg:GetDescendants()) do
-					if Object:IsA("GuiObject") then
-						Object.ZIndex = Object.ZIndex + 3
-					end
-				end
-				AnimateTokenBorders(Bg)
-				Cloned = true
-			end)
-			if not Cloned then
-				local Token = New("Frame", {
-					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-					Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(22, 22, 22),
-					BorderSizePixel = 0,
-				}, IconBox)
-				New("UICorner", { CornerRadius = UDim.new(0, 0.15) }, Token)
-				New("UIAspectRatioConstraint", { AspectRatio = 1 }, Token)
-				New("ImageLabel", {
-					Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-					Image = "rbxassetid://86044272558886",
-				}, Token)
-				local Glow = New("ImageLabel", {
-					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-					Size = UDim2.fromScale(1.4, 1.4), BackgroundTransparency = 1,
-					Image = "rbxassetid://105669515169727", ZIndex = 0,
-				}, Token)
-				local Pts = {}
-				for _, S in ipairs(LIVE_RAINBOW) do
-					Pts[#Pts + 1] = ColorSequenceKeypoint.new(S[1], Color3.new(S[2], S[3], S[4]))
-				end
-				New("UIGradient", { Color = ColorSequence.new(Pts), Rotation = 45 }, Glow)
-			end
+			-- build the exact TraitReroll MOCK BG from inspected properties
+			BuildTokenBg(IconBox)
 			local Image = New("ImageLabel", {
 				AnchorPoint = Vector2.new(0.5, 0.5),
 				Position = UDim2.fromScale(0.5, 0.5),
