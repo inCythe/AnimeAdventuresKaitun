@@ -5334,25 +5334,37 @@ end
 
 Match.VoteStartFired = false
 Match.VoteSkipFired = false
-function Match.Votes()
-	if Config.VoteStart then
-		local Gui = PlayerGui:FindFirstChild("VoteStart")
-		local Data = workspace:FindFirstChild("_DATA")
-		local Vote = Data and Data:FindFirstChild("VoteStart")
-		local Flag = Vote and Vote:FindFirstChild("VotingFinished")
-		local Voting = Flag ~= nil and Flag:IsA("ValueBase") and Flag.Value == false
-		-- only vote while the real vote popup is open - firing earlier makes
-		-- DifficultyServiceServer throw on a nil Instance
-		if Gui and Gui:IsA("ScreenGui") and Gui.Enabled and Voting then
-			if not Match.VoteStartFired then
-				Match.VoteStartFired = true
-				LogT("Vote", "start")
-				Util.Invoke("vote_start")
-			end
-		else
-			Match.VoteStartFired = false
-		end
+Match.VoteStartNext = 0
+
+-- Called both from Match.Votes and from a dedicated 0.1s voter in Match.Run.
+-- The popup guard is unchanged: only fire while the real VoteStart UI is
+-- visible and its VotingFinished flag says voting is still open.
+local function VoteStartTick()
+	if not Config.VoteStart then
+		return
 	end
+	local Gui = PlayerGui:FindFirstChild("VoteStart")
+	local Data = workspace:FindFirstChild("_DATA")
+	local Vote = Data and Data:FindFirstChild("VoteStart")
+	local Flag = Vote and Vote:FindFirstChild("VotingFinished")
+	local Voting = Flag ~= nil and Flag:IsA("ValueBase") and Flag.Value == false
+	if Gui and Gui:IsA("ScreenGui") and Gui.Enabled and Voting then
+		if not Match.VoteStartFired then
+			LogT("Vote", "start (spamming every 0.1s)")
+		end
+		Match.VoteStartFired = true
+		if os.clock() >= Match.VoteStartNext then
+			Match.VoteStartNext = os.clock() + 0.1
+			Util.Invoke("vote_start")
+		end
+	else
+		Match.VoteStartFired = false
+		Match.VoteStartNext = 0
+	end
+end
+
+function Match.Votes()
+	VoteStartTick()
 
 	if Config.VoteSkip then
 		local Gui = PlayerGui:FindFirstChild("VoteSkip")
@@ -5460,6 +5472,18 @@ function Match.Run()
 	end
 	UI.Set("Match - starting")
 
+	-- The main loop ticks at 0.4s; vote-start needs 0.1s while the popup is
+	-- visible. A dedicated voter is safe because VoteStartTick keeps the same
+	-- UI / VotingFinished guard as before.
+	if Config.VoteStart then
+		task.spawn(function()
+			while not Env.AAKaitunStop do
+				pcall(VoteStartTick)
+				task.wait(0.1)
+			end
+		end)
+	end
+
 	-- the lobby stores the run kind here before teleporting; it can be nil on a
 	-- manual join, so always fall back to an empty table
 	local Current = State.Current or {}
@@ -5467,6 +5491,7 @@ function Match.Run()
 	local LoseVoted = false
 	local LastUi = 0
 	local WasActive = false
+	local WasFinished = false
 	-- a match that never actually starts (stuck on the loading/pregame screen)
 	-- must not hold the bot forever; leave back to the lobby after 5 minutes
 	local PreGameSince = os.clock()
@@ -5491,6 +5516,7 @@ function Match.Run()
 
 		if Match.Active() then
 			PreGameSince = os.clock()
+			WasFinished = false
 			if not WasActive then
 				WasActive = true
 				Handled = false
@@ -5534,14 +5560,21 @@ function Match.Run()
 			end
 		else
 			WasActive = false
-			if not Match.Finished() and os.clock() - PreGameSince >= Config.MatchIdleTimeout then
+			local Finished = Match.Finished()
+			-- another replay starts as soon as GameFinished clears; re-arm the
+			-- watchdog so a stuck next pre-game is watched too
+			if WasFinished and not Finished then
+				PreGameSince = os.clock()
+			end
+			WasFinished = Finished
+			if not Finished and os.clock() - PreGameSince >= Config.MatchIdleTimeout then
 				LogT("Match", "idle for %ds with no game start - leaving to lobby",
 					Config.MatchIdleTimeout)
 				Util.Fire("teleport_back_to_lobby")
 				task.wait(2)
 				return
 			end
-			if Match.Finished() and not Handled then
+			if Finished and not Handled then
 				Handled = true
 				task.spawn(Match.Finish)
 			end
