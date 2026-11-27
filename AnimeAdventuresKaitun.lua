@@ -1979,6 +1979,7 @@ end
 -- codes the server ignored this session (never saved to disk)
 local CodeDead = {}
 local LastSocialRetry = -60 -- os.clock() of last attempt; -60 makes the first call immediate
+local SOCIAL_RETRY_WAIT = 30 -- seconds between group/favorite re-prompts
 
 -- The social-gated compass code (CELESTIALCOMPASSU21) is the real proof that
 -- the group join + favorite actually registered on the account. Reading the
@@ -2019,13 +2020,12 @@ local function GroupAndFavorite()
 	if not Config.JoinGroup or SocialReady() then
 		return
 	end
-	-- skip the UI entirely when the group join + favorite are already done
-	if IsInGroup() and IsFavorited() then
-		return
-	end
+	-- even if the group/favorite checks already pass, keep re-running them on
+	-- a throttle while the code is unredeemed: the server can still say
+	-- needs_social and a fresh prompt sometimes makes it register.
 	-- throttle attempts to once a minute; Lobby.Plan re-calls this every visit
 	-- until the social checks pass
-	if os.clock() - LastSocialRetry < 60 then
+	if os.clock() - LastSocialRetry < SOCIAL_RETRY_WAIT then
 		return
 	end
 	LastSocialRetry = os.clock()
@@ -2037,8 +2037,9 @@ local function GroupAndFavorite()
 		task.wait(1)
 		Favorited = FavoriteViaCode()
 	end
-	LogT("Group", "group %s, favorite %s (social not satisfied yet)",
-		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done")
+	LogT("Group", "group=%s favorite=%s | live group=%s fav=%s (code still not redeemed)",
+		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done",
+		tostring(IsInGroup()), tostring(IsFavorited()))
 end
 
 -- ============================================================================
