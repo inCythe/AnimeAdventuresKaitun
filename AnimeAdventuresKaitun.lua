@@ -1930,6 +1930,21 @@ local function CompassUnitOwned()
 	return Pick ~= nil and Account.HasUnit(Pick) == true
 end
 
+-- set_celestial_compass_pick stores the chosen pick on the profile immediately,
+-- while the item can stay in inventory until it is actually spent. That means
+-- the pick is the reliable "already chosen" signal on a fresh lobby visit.
+local function CompassPickSet()
+	local Pick = Account.CompassUnit()
+	if not Pick then
+		return false
+	end
+	local Saved = Account.Profile()._celestial_compass_pick
+	if type(Saved) ~= "string" or Saved == "" then
+		return false
+	end
+	return Saved:lower() == tostring(Pick):lower()
+end
+
 -- The compass item in inventory is the only success signal: getting it from
 -- the code means the group join + favorite actually registered on the account.
 local function HasCompassInInventory()
@@ -1959,8 +1974,8 @@ end
 -- dialog appears (group join prompt OR favorite prompt). The ONLY success
 -- signal is the compass item in inventory — IsFavorited() is never checked.
 local function EnsureCompass()
-	-- the unit itself proves the compass was already used; the item is gone
-	if CompassUnitOwned() or HasCompassInInventory() then
+	-- an owned unit or an already-chosen pick means the code is spent
+	if CompassUnitOwned() or CompassPickSet() or HasCompassInInventory() then
 		return true
 	end
 
@@ -2065,7 +2080,7 @@ local CodeDead = {}
 -- The compass item in inventory is the only success signal.
 local function GroupAndFavorite()
 	-- no item is left after the pick became a unit, so never re-redeem the code
-	if not Config.JoinGroup or CompassUnitOwned() then
+	if not Config.JoinGroup or CompassUnitOwned() or CompassPickSet() then
 		return
 	end
 	EnsureCompass()
@@ -2800,10 +2815,10 @@ local function WaitForCompassGui(Timeout)
 	return CompassUsedInGui()
 end
 
--- The compass is done only when the pick has become an owned unit. The compass
--- item in inventory means it is still pending, never that it is done.
+-- Done when the pick became an owned unit OR the profile already holds that
+-- pick. The compass item in inventory alone means it is still pending.
 local function CompassDone()
-	return CompassUnitOwned()
+	return CompassUnitOwned() or CompassPickSet()
 end
 
 -- Same inventory shape TraitResources() uses for star remnants:
@@ -2831,8 +2846,8 @@ function Lobby.UseCompass(Force)
 	if not Pick then
 		return false
 	end
-	-- the pick is already a unit: nothing left to redeem or spend
-	if CompassUnitOwned() then
+	-- the pick is already chosen (or even a unit): nothing left to do
+	if CompassDone() then
 		return true
 	end
 	-- the GUI slot is the source of truth, re-checked on every call
@@ -3884,7 +3899,7 @@ function Lobby.Plan()
 	-- compass acquisition: group join -> Code UI compass code -> handle the
 	-- group/favorite prompt. Once the pick is an owned unit the item is gone and
 	-- the code cannot be redeemed again, so that also counts as done.
-	if not CompassUnitOwned() and not HasCompassInInventory() then
+	if not CompassDone() and not HasCompassInInventory() then
 		GroupAndFavorite()
 		return "social"
 	end
@@ -4008,9 +4023,8 @@ function Lobby.Bootstrap()
 		return true
 	end
 	-- 1) acquire the compass item (group + code) if it has not landed yet;
-	-- an owned compass UNIT means the item was already spent on the pick
-	if Config.JoinGroup and not CompassUnitOwned() and not CompassDone()
-		and not HasCompassItem() then
+	-- an owned unit or an already-chosen pick means it is done
+	if Config.JoinGroup and not CompassDone() and not HasCompassItem() then
 		SocialAttempts += 1
 		GroupAndFavorite()
 		if not HasCompassItem() and not CompassDone() then
@@ -4022,7 +4036,7 @@ function Lobby.Bootstrap()
 		end
 	end
 	-- 2) spend the compass item as soon as it is in the inventory
-	if not CompassUnitOwned() and HasCompassItem() and not CompassDone() then
+	if HasCompassItem() and not CompassDone() then
 		Lobby.UseCompass(true)
 		if HasCompassItem() and not CompassDone() then
 			return false
