@@ -1795,16 +1795,19 @@ local function ButtonAlive(Button)
 	return Ok and Alive
 end
 
+-- Live-verified VirtualInputManager press: select the button, give the engine
+-- time to focus it, then hold Return briefly. Do NOT unselect immediately —
+-- that cancels the press before the game registers it.
 local function PressButton(Button)
 	pcall(function()
 		Button.Selectable = true
 		if GuiService.SelectedObject ~= Button then
 			GuiService.SelectedObject = Button
-			task.wait(0.05)
+			task.wait(0.08)
 		end
 		if GuiService.SelectedObject == Button and ButtonAlive(Button) then
 			VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-			task.wait(0.02)
+			task.wait(0.04)
 			VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
 		end
 	end)
@@ -2026,7 +2029,6 @@ local function EnsureCompass()
 				LogT("Group", "group join prompt popped - pressing join")
 				LastPromptPress = os.clock()
 				PressButton(JoinBtn)
-				Unselect()
 			else
 				-- favorite prompt: press its Yes button ("2")
 				local FavBtn = FindFavoriteButton()
@@ -2034,7 +2036,6 @@ local function EnsureCompass()
 					LogT("Group", "favorite prompt popped - pressing Yes")
 					LastPromptPress = os.clock()
 					PressButton(FavBtn)
-					Unselect()
 				end
 			end
 		end
