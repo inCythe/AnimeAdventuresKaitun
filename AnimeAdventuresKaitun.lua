@@ -1921,12 +1921,26 @@ end
 -- The profile's redeemed_codes table is the only source of truth. If the
 -- social compass code is already there, nothing to do; otherwise retry the
 -- group join + favorite on this lobby visit. No saved-file flags involved.
+-- Social requirement is satisfied when the profile shows the code redeemed,
+-- OR when the account is verifiably in the group AND favorited the game.
+-- Live-verified checks: Player:IsInGroup(10611639) and
+-- AvatarEditorService:GetFavorite(placeId, Asset) both return true.
+local function SocialReady()
+	if CompassCodeRedeemed() then
+		return true
+	end
+	if not Config.JoinGroup then
+		return true
+	end
+	return IsInGroup() and IsFavorited()
+end
+
 local function GroupAndFavorite()
-	if not Config.JoinGroup or CompassCodeRedeemed() then
+	if not Config.JoinGroup or SocialReady() then
 		return
 	end
 	-- throttle attempts to once a minute; Lobby.Plan re-calls this every visit
-	-- until the profile shows the social code redeemed
+	-- until the social checks pass
 	if os.clock() - LastSocialRetry < 60 then
 		return
 	end
@@ -1939,7 +1953,7 @@ local function GroupAndFavorite()
 		task.wait(1)
 		Favorited = FavoriteViaCode()
 	end
-	LogT("Group", "group %s, favorite %s (compass code not redeemed yet)",
+	LogT("Group", "group %s, favorite %s (social not satisfied yet)",
 		Joined and "joined" or "NOT joined", Favorited and "done" or "NOT done")
 end
 
@@ -3708,12 +3722,12 @@ function Lobby.Plan()
 	Log("level %d | gems %d | hunt %s", Level, Account.Gems(),
 		State.HuntDone and "done" or "pending")
 
-	-- nothing else until the social compass code is redeemed. Re-run the
-	-- group/favorite retry (throttled to once a minute) each planning tick,
-	-- no story / infinite / challenges / hunt until the profile confirms it.
-	if Config.JoinGroup and not CompassCodeRedeemed() then
+	-- nothing else until social is satisfied: code redeemed in the profile,
+	-- or (in group AND favorited) verified live. Re-run group/favorite and the
+	-- code redeem each planning tick; no story/infinite/challenges/hunt yet.
+	if not SocialReady() then
 		GroupAndFavorite()
-		Lobby.RedeemCodes() -- retry redeeming the code after social is done
+		Lobby.RedeemCodes()
 		return "social"
 	end
 
