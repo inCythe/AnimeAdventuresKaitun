@@ -539,13 +539,10 @@ function Account.UnitName(Id)
 	return type(Name) == "string" and Name or tostring(Id)
 end
 
--- The game stores the actual celestial compass pick on the profile. Use that
--- instead of the config value; UnitId resolves both ids and display names.
+-- Always use the configured compass unit (getgenv().Kaitun.CompassUnit wins over
+-- the built-in default). The profile pick is only the CURRENT pick: if it does
+-- not match this value we re-fire set_celestial_compass_pick with this one.
 function Account.CompassUnit()
-	local Picked = Account.Profile()._celestial_compass_pick
-	if type(Picked) == "string" and Picked ~= "" then
-		return Account.UnitId(Picked)
-	end
 	return Config.CompassUnit and Account.UnitId(Config.CompassUnit) or nil
 end
 
@@ -1243,20 +1240,39 @@ function UI.Overlay()
 		return (Out:gsub("^,", ""))
 	end
 
-	-- Unique status for the compass unit: Not Started / No / Yes
+	-- Unique card: green "Yes" once the compass unit has the Unique trait,
+	-- otherwise the account's total trait reroll count in red.
 	local function UniqueStatus()
 		local UnitId = Account.CompassUnit()
-		if not UnitId then
-			return "Not Started", Theme.Muted
+		local HasUnique = false
+		if UnitId then
+			local Coll = Account.Collection()
+			for _, Unit in pairs(type(Coll.owned_units) == "table" and Coll.owned_units or {}) do
+				if type(Unit) == "table" and Unit.unit_id == UnitId
+					and type(Unit.traits) == "table" then
+					for _, Trait in pairs(Unit.traits) do
+						local Id = type(Trait) == "table"
+							and (Trait.id or Trait.trait_id or Trait.name) or Trait
+						if tostring(Id):lower():find("unique", 1, true) then
+							HasUnique = true
+							break
+						end
+					end
+				end
+				if HasUnique then
+					break
+				end
+			end
+			if not HasUnique then
+				local Record = State.TraitRoll and State.TraitRoll[UnitId]
+				HasUnique = Record ~= nil and Record.gotUnique == true
+			end
 		end
-		local Record = State.TraitRoll and State.TraitRoll[UnitId]
-		if not Record then
-			return "Not Started", Theme.Muted
-		end
-		if Record.gotUnique then
+		if HasUnique then
 			return "Yes", Theme.Good
 		end
-		return "No", Theme.Warn
+		local Count = tonumber(Account.Profile().total_trait_rerolls) or 0
+		return tostring(Count), Theme.Bad
 	end
 
 	-- "shadow_sorcerer" / "Shadow sorcerer" -> "Shadow Sorcerer"
@@ -3905,7 +3921,9 @@ function Lobby.Plan()
 	-- compass acquisition: group join -> Code UI compass code -> handle the
 	-- group/favorite prompt. Once the pick is an owned unit the item is gone and
 	-- the code cannot be redeemed again, so that also counts as done.
-	if not CompassDone() and not HasCompassInInventory() then
+	-- a pick that differs from the configured unit can only be changed while a
+	-- compass item exists, so never block the planner when the item is gone
+	if not HasCompassInInventory() and not CompassPickSet() and not CompassUnitOwned() then
 		GroupAndFavorite()
 		return "social"
 	end
@@ -4030,7 +4048,8 @@ function Lobby.Bootstrap()
 	end
 	-- 1) acquire the compass item (group + code) if it has not landed yet;
 	-- an owned unit or an already-chosen pick means it is done
-	if Config.JoinGroup and not CompassDone() and not HasCompassItem() then
+	if Config.JoinGroup and not HasCompassItem()
+		and not CompassPickSet() and not CompassUnitOwned() then
 		SocialAttempts += 1
 		GroupAndFavorite()
 		if not HasCompassItem() and not CompassDone() then
