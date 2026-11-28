@@ -13,6 +13,18 @@ if not game:IsLoaded() then
 	until game:IsLoaded()
 end
 
+-- Never start the hosted script without the user's getgenv config. If we load
+-- before the config is set, its built-in default compass unit (elyssia) would
+-- be used and then embedded into the teleport stub, replacing the real config.
+local ConfigDeadline = os.clock() + 60
+while type(getgenv().Kaitun) ~= "table" and os.clock() < ConfigDeadline do
+	task.wait(0.2)
+end
+if type(getgenv().Kaitun) ~= "table" then
+	warn("[AA Kaitun] getgenv().Kaitun never appeared - aborting instead of using defaults")
+	return
+end
+
 -- queue the loader itself for the next server
 pcall(function()
 	if type(queue_on_teleport) == "function" then

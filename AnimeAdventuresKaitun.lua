@@ -243,6 +243,7 @@ local Config = {
 	MatchmakingCooldown = 20,   -- wait after a timed-out queue before requeueing
 	QueueTimeout = 300,         -- leave the queue after 5 minutes still unjoined
 	MatchIdleTimeout = 300,     -- leave a match that never starts within 5 minutes
+	Webhook = nil,              -- Discord webhook URL for trait roll results
 
 	-- auto trait reroll (compass unit; Unique is always kept) ----------------
 	AutoTrait = true,
@@ -281,7 +282,21 @@ local function AutoTraitEnabled()
 end
 
 -- getgenv().Kaitun overrides (same names people already use) ------------------
+-- Wait for the real config instead of silently falling back to the built-in
+-- default (elyssia). The config is also re-queued on teleport, but this guard
+-- makes sure we never start with defaults if the user script loads a moment
+-- later than the loader.
 local User = Env.Kaitun
+local ConfigDeadline = os.clock() + 60
+while type(User) ~= "table" and os.clock() < ConfigDeadline do
+	task.wait(0.2)
+	User = Env.Kaitun
+end
+if type(User) ~= "table" then
+	warn("[AA Kaitun] getgenv().Kaitun never appeared - aborting instead of using defaults")
+	return
+end
+
 if type(User) == "table" then
 	local function Num(Value)
 		return tonumber(Value)
@@ -314,6 +329,7 @@ if type(User) == "table" then
 	if type(User.TraitKeep) == "table" then Config.TraitKeep = User.TraitKeep end
 	if type(User.TraitSources) == "table" then Config.TraitSources = User.TraitSources end
 	if Num(User.TraitMinResources) then Config.TraitMinResources = math.floor(Num(User.TraitMinResources)) end
+	if User.Webhook ~= nil then Config.Webhook = tostring(User.Webhook) end
 end
 
 -- survive lobby <-> match teleports ------------------------------------------
@@ -333,7 +349,11 @@ if not OkJson then
 	UserJson = "{}"
 end
 local BootCode = [[
-getgenv().Kaitun = game:GetService("HttpService"):JSONDecode(__CFG__)
+-- keep the LIVE config if the executor preserved it across the teleport;
+-- the embedded copy is only a fallback for executors that wipe getgenv
+if type(getgenv().Kaitun) ~= "table" then
+  getgenv().Kaitun = game:GetService("HttpService"):JSONDecode(__CFG__)
+end
 local ok, src = pcall(game.HttpGet, game, __URL__)
 local fn = ok and type(src) == "string" and loadstring(src) or nil
 if fn then task.spawn(fn) else warn("[AA Kaitun] reload failed - HTTP fetch failed") end
@@ -546,7 +566,11 @@ end
 -- the built-in default). The profile pick is only the CURRENT pick: if it does
 -- not match this value we re-fire set_celestial_compass_pick with this one.
 function Account.CompassUnit()
-	return Config.CompassUnit and Account.UnitId(Config.CompassUnit) or nil
+	-- read the LIVE getgenv config every time; never fall back to the built-in
+	-- default while a user config exists
+	local Live = type(Env.Kaitun) == "table" and Env.Kaitun.CompassUnit or nil
+	local Raw = Live ~= nil and Live or Config.CompassUnit
+	return Raw and Account.UnitId(Raw) or nil
 end
 
 function Account.HasUnit(Id)
@@ -2572,6 +2596,22 @@ local function TraitRerollCost(Source, UnitId)
 	return 1
 end
 
+-- Send a Discord notification when a trait session finishes. Webhook can be
+-- set as getgenv().Kaitun.Webhook (or Env.Webhook) and is optional.
+local function SendWebhook(Text)
+	local Url = Config.Webhook
+	if type(Env.Webhook) == "string" and Env.Webhook ~= "" then
+		Url = Env.Webhook
+	end
+	if type(Url) ~= "string" or Url == "" then
+		return
+	end
+	pcall(function()
+		HttpService:PostAsync(Url, HttpService:JSONEncode({ content = Text }),
+			Enum.HttpContentType.ApplicationJson, false)
+	end)
+end
+
 local function NextTraitSource(Res, Exhausted, UnitId)
 	for _, Raw in ipairs(Config.TraitSources or {}) do
 		local Source = NormalizeTraitSource(Raw)
@@ -2698,6 +2738,18 @@ function Lobby.AutoRollTraits(UnitId)
 	}
 	if Hit then
 		Record.doneAt = os.time() -- only stop future visits when it landed
+	end
+	-- notify once per unit/result, including the "rolled out, no unique" case
+	local Prev = State.TraitRoll[UnitId]
+	if Prev and Prev.notified then
+		Record.notified = true
+	end
+	if not Record.notified and (Hit or Rolls > 0) then
+		Record.notified = true
+		SendWebhook(("%s | %s | %s | %d roll(s) | %s"):format(
+			Player.Name, Account.UnitName(UnitId),
+			GotUnique and "GOT UNIQUE" or "NO UNIQUE", Rolls,
+			table.concat(Record.traits, ", ")))
 	end
 	State.TraitRoll[UnitId] = Record
 	SaveState()
