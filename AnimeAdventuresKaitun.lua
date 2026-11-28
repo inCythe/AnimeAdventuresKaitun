@@ -2891,7 +2891,6 @@ function Lobby.UseCompass(Force)
 	-- pick within this same lobby visit and also accept the item disappearing
 	-- as proof the server spent it, so the first summon is never deferred just
 	-- because the GUI was slow.
-	local Before = CompassItemCount()
 	for Attempt = 1, 4 do
 		Log("compass -> %s (try %d)", Account.UnitName(Pick), Attempt)
 		local Ok, Result = Util.Call(5, function()
@@ -2904,14 +2903,14 @@ function Lobby.UseCompass(Force)
 				Log("compass replied: %s", Result)
 			end
 			if Result ~= false then
-				if WaitForCompassGui(4) then
-					Log("compass used -> %s (slot verified)", Account.UnitName(Pick))
-					return true
+				-- verify against the profile pick, not just the GUI slot: the
+				-- slot can stay visible from an older pick
+				local ConfirmEnd = os.clock() + 4
+				while os.clock() < ConfirmEnd and not CompassPickSet() do
+					task.wait(0.2)
 				end
-				-- item consumed but GUI not replicated yet: the unit check on
-				-- the next tick is the real confirmation
-				if CompassItemCount() < Before then
-					Log("compass pick sent for %s - waiting for the unit", Account.UnitName(Pick))
+				if CompassPickSet() then
+					Log("compass used -> %s (pick verified)", Account.UnitName(Pick))
 					return true
 				end
 			end
@@ -4042,6 +4041,7 @@ local EquipDone = false
 local SellDone = false
 local EquipAttempts = 0
 local SocialAttempts = 0
+local CompassAttempts = 0
 
 function Lobby.Bootstrap()
 	if BootstrapDone then
@@ -4063,9 +4063,15 @@ function Lobby.Bootstrap()
 	end
 	-- 2) spend the compass item as soon as it is in the inventory
 	if HasCompassItem() and not CompassDone() then
+		CompassAttempts += 1
 		Lobby.UseCompass(true)
 		if HasCompassItem() and not CompassDone() then
-			return false
+			if CompassAttempts >= 5 then
+				LogT("Compass", "pick still %s - continuing",
+					tostring(Account.Profile()._celestial_compass_pick))
+			else
+				return false
+			end
 		end
 	end
 	-- 3) one 10x while the collection has fewer than 6 units; with 6+ owned
