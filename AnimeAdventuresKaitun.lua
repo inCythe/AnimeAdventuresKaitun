@@ -509,8 +509,12 @@ function Account.Level()
 	return 1
 end
 
--- unit ids from the config are matched case-insensitively against the data
+-- unit ids from the config are matched case- and punctuation-insensitively
+-- (e.g. "shadow sorcerer incident" resolves "Shadow Sorcerer (Incident)")
 local UnitIdLookup
+local function NormalizeUnit(Value)
+	return (tostring(Value):lower():gsub("[^%w]", ""))
+end
 function Account.UnitId(Id)
 	if Id == nil then
 		return nil
@@ -522,15 +526,14 @@ function Account.UnitId(Id)
 	if not UnitIdLookup then
 		UnitIdLookup = {}
 		for Key, Def in pairs(Units) do
-			local Lower = tostring(Key):lower()
-			UnitIdLookup[Lower] = Key
+			UnitIdLookup[NormalizeUnit(Key)] = Key
 			local Name = type(Def) == "table" and Def.name
 			if type(Name) == "string" then
-				UnitIdLookup[Name:lower()] = Key
+				UnitIdLookup[NormalizeUnit(Name)] = Key
 			end
 		end
 	end
-	return UnitIdLookup[Raw:lower()] or Raw
+	return UnitIdLookup[NormalizeUnit(Raw)] or Raw
 end
 
 function Account.UnitName(Id)
