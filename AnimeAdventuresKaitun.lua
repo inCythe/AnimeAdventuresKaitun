@@ -2871,12 +2871,10 @@ function Lobby.UseCompass(Force)
 	if not Pick then
 		return false
 	end
-	-- the pick is already chosen (or even a unit): nothing left to do
-	if CompassDone() then
-		return true
-	end
-	-- the GUI slot is the source of truth, re-checked on every call
-	if CompassUsedInGui() then
+	-- Only the profile pick matching our configured unit counts as done. The
+	-- GUI slot alone is NOT enough: the compass item stays in inventory even
+	-- after a pick, so that slot cannot tell us when to re-pick a new unit.
+	if CompassPickSet() then
 		return true
 	end
 	if not HasCompassItem() then
